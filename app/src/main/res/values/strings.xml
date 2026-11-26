@@ -1,0 +1,21 @@
+<resources>
+    <string name="app_name">AIO Tunnel VPN</string>
+    <string name="nav_home">Inicio</string>
+    <string name="nav_servers">Servidores</string>
+    <string name="nav_configs">Perfiles</string>
+    <string name="nav_diagnostics">Diagnóstico</string>
+    <string name="nav_settings">Ajustes</string>
+
+    <string name="status_disconnected">Desconectado</string>
+    <string name="status_preparing">Preparando</string>
+    <string name="status_connecting">Conectando</string>
+    <string name="status_connected">Conectado</string>
+    <string name="status_reconnecting">Reconectando</string>
+    <string name="status_disconnecting">Desconectando</string>
+    <string name="status_error">Error</string>
+
+    <string name="vpn_notification_channel_name">Estado del túnel VPN</string>
+    <string name="vpn_notification_channel_desc">Notificación persistente mientras el túnel AIO Tunnel VPN está activo</string>
+    <string name="vpn_action_disconnect">Desconectar</string>
+    <string name="privacy_notice_summary">AIO Tunnel VPN no recopila telemetría ni incluye rastreadores ni publicidad. El proveedor del servidor proxy, SSH o VPN al que te conectes puede observar metadatos de conexión (dirección IP de origen, volumen de tráfico y marcas temporales).</string>
+</resources>

@@ -1,0 +1,6 @@
+{
+  "name": "AIO Tunnel VPN",
+  "description": "Cliente VPN Android multiprotocolo nativo con arquitectura modular, soporte real para HTTP/HTTPS CONNECT, SOCKS5, SSH (clave privada y Jump Host), DNS-over-HTTPS y cifrado AES-GCM respaldado por Android Keystore.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
