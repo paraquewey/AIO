@@ -5,6 +5,7 @@ import com.example.data.security.HostKeyVerificationResult
 import com.example.data.security.SshHostKeyStore
 import com.example.domain.models.EngineFamily
 import com.example.domain.models.ProfileSecrets
+import com.example.domain.models.ServerMessageMode
 import com.example.domain.models.SshAuthMethod
 import com.example.domain.models.SshHostKeyChallenge
 import com.example.domain.models.TunnelProfile
@@ -16,6 +17,7 @@ import com.example.engines.adapter.TunnelEngine
 import com.example.engines.adapter.TunnelStream
 import com.example.engines.adapter.UdpRelaySession
 import com.example.engines.http.RawTcpPayloadExecutor
+import com.jcraft.jsch.Channel
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.HostKey
 import com.jcraft.jsch.HostKeyRepository
@@ -54,6 +56,9 @@ class SshTunnelEngine(
     private var primarySession: Session? = null
     private var localSocksServer: LocalSocks5Server? = null
     private var forwardedLocalPort: Int = -1
+
+    @Volatile
+    private var lastServerBanner: String? = null
 
     override suspend fun validateConfiguration(
         profile: TunnelProfile,
@@ -118,7 +123,7 @@ class SshTunnelEngine(
                     if (profile.jumpAuthMethod == SshAuthMethod.PASSWORD) {
                         jSession.setPassword(secrets.jumpPassword.toByteArray(StandardCharsets.UTF_8))
                     }
-                    configureSession(jSession, ctx, profile.jumpHost, profile.jumpPort)
+                    configureSession(jSession, profile.serverMessageMode, profile.jumpHost, profile.jumpPort)
                     AppLogger.info(TAG, "Conectando Jump Host SSH ${profile.jumpHost}:${profile.jumpPort} (timeout=${timeoutMs} ms)...")
                     jSession.connect(timeoutMs)
                     jumpSession = jSession
@@ -153,7 +158,7 @@ class SshTunnelEngine(
                     session.setPassword(secrets.password.toByteArray(StandardCharsets.UTF_8))
                 }
                 session.hostKeyAlias = "${profile.host}:${profile.port}"
-                configureSession(session, ctx, profile.host, profile.port)
+                configureSession(session, profile.serverMessageMode, profile.host, profile.port)
 
                 AppLogger.info(TAG, "Autenticando sesión SSH contra ${profile.host}:${profile.port} (timeout=${timeoutMs} ms)...")
                 session.connect(timeoutMs)
@@ -190,6 +195,7 @@ class SshTunnelEngine(
         runCatching { localSocksServer?.close() }
         localSocksServer = null
         activeProfile = null
+        lastServerBanner = null
         runCatching { primarySession?.disconnect() }
         primarySession = null
         runCatching {
@@ -212,6 +218,7 @@ class SshTunnelEngine(
             channel.setPort(targetPort)
             channel.setOrgIPAddress("127.0.0.1")
             channel.setOrgPort(0)
+            configureChannelWindow(channel, SSH_LOCAL_WINDOW_BYTES)
             val input = channel.inputStream
             val output = channel.outputStream
             val timeoutMs = (context?.connectionTimeoutMs ?: CONNECT_TIMEOUT_MS).coerceIn(1_000, 999_000)
@@ -253,7 +260,32 @@ class SshTunnelEngine(
 
     override fun getLocalSocksPort(): Int? = localSocksServer?.localPort?.takeIf { it > 0 }
 
-    private fun configureSession(session: Session, ctx: EngineContext, realHost: String, realPort: Int) {
+    override fun getServerBanner(): String? = lastServerBanner
+
+    private fun configureChannelWindow(channel: Channel, windowBytes: Int) {
+        runCatching {
+            val setLwSize = Channel::class.java.getDeclaredMethod("setLocalWindowSize", Int::class.javaPrimitiveType)
+            setLwSize.isAccessible = true
+            setLwSize.invoke(channel, windowBytes)
+        }
+        runCatching {
+            val lwMaxField = Channel::class.java.getDeclaredField("lwsize_max")
+            lwMaxField.isAccessible = true
+            lwMaxField.setInt(channel, windowBytes)
+        }
+        runCatching {
+            val setPktSize = Channel::class.java.getDeclaredMethod("setLocalPacketSize", Int::class.javaPrimitiveType)
+            setPktSize.isAccessible = true
+            setPktSize.invoke(channel, SSH_LOCAL_PACKET_BYTES)
+        }
+    }
+
+    private fun configureSession(
+        session: Session,
+        messageMode: ServerMessageMode,
+        realHost: String,
+        realPort: Int
+    ) {
         val config = Properties()
         config["StrictHostKeyChecking"] = "yes"
         config["PreferredAuthentications"] = "publickey,password,keyboard-interactive"
@@ -266,7 +298,16 @@ class SshTunnelEngine(
             override fun promptYesNo(message: String?): Boolean = false
             override fun showMessage(message: String?) {
                 if (!message.isNullOrBlank()) {
-                    AppLogger.info(TAG, "SSH Banner ($realHost:$realPort): $message")
+                    when (messageMode) {
+                        ServerMessageMode.ORIGINAL -> {
+                            lastServerBanner = message.trim()
+                            AppLogger.info(TAG, "SSH Banner ($realHost:$realPort): $message")
+                        }
+                        ServerMessageMode.HIDDEN,
+                        ServerMessageMode.CUSTOM_HTML -> {
+                            // Suppressed: console hides or replaces banner with custom HTML/CSS
+                        }
+                    }
                 }
             }
         }
@@ -355,6 +396,9 @@ class SshTunnelEngine(
             if (!applyPayload) {
                 val socket = Socket()
                 socket.tcpNoDelay = true
+                socket.keepAlive = true
+                runCatching { socket.receiveBufferSize = SOCKET_BUFFER_BYTES }
+                runCatching { socket.sendBufferSize = SOCKET_BUFFER_BYTES }
                 if (!protectSocket(socket)) {
                     socket.close()
                     throw IOException("VpnService.protect() rechazó socket SSH.")
@@ -375,7 +419,7 @@ class SshTunnelEngine(
             )
             try {
                 if (profile.rawHttpPayload.isNotEmpty()) {
-                    val bufferedIn = BufferedInputStream(socket.getInputStream())
+                    val bufferedIn = BufferedInputStream(socket.getInputStream(), 65_536)
                     val statusLine = RawTcpPayloadExecutor.executeRawPayloadHandshake(
                         socket = socket,
                         bufferedIn = bufferedIn,
@@ -415,5 +459,8 @@ class SshTunnelEngine(
     companion object {
         private const val TAG = "SshTunnelEngine"
         private const val CONNECT_TIMEOUT_MS = 12_000
+        private const val SSH_LOCAL_WINDOW_BYTES = 2 * 1024 * 1024
+        private const val SSH_LOCAL_PACKET_BYTES = 32_768
+        private const val SOCKET_BUFFER_BYTES = 256 * 1024
     }
 }

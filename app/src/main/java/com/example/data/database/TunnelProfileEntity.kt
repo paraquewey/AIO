@@ -3,6 +3,7 @@ package com.example.data.database
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import com.example.domain.models.DnsMode
+import com.example.domain.models.ServerMessageMode
 import com.example.domain.models.SplitTunnelMode
 import com.example.domain.models.SshAuthMethod
 import com.example.domain.models.TransportType
@@ -42,6 +43,8 @@ data class TunnelProfileEntity(
     val mtu: Int,
     val splitTunnelModeName: String,
     val splitTunnelPackagesJson: String,
+    val serverMessageModeName: String = ServerMessageMode.ORIGINAL.name,
+    val customServerMessageHtml: String = "",
     val category: String,
     val colorTagHex: Long,
     val tagsJson: String,
@@ -91,6 +94,8 @@ fun TunnelProfileEntity.toDomain(): TunnelProfile = TunnelProfile(
     splitTunnelPackages = runCatching {
         dbJson.decodeFromString<List<String>>(splitTunnelPackagesJson)
     }.getOrDefault(emptyList()),
+    serverMessageMode = runCatching { ServerMessageMode.valueOf(serverMessageModeName) }.getOrDefault(ServerMessageMode.ORIGINAL),
+    customServerMessageHtml = customServerMessageHtml,
     category = category,
     colorTagHex = colorTagHex,
     tags = runCatching { dbJson.decodeFromString<List<String>>(tagsJson) }.getOrDefault(emptyList()),
@@ -131,6 +136,8 @@ fun TunnelProfile.toEntity(): TunnelProfileEntity = TunnelProfileEntity(
     mtu = mtu,
     splitTunnelModeName = splitTunnelMode.name,
     splitTunnelPackagesJson = dbJson.encodeToString(splitTunnelPackages),
+    serverMessageModeName = serverMessageMode.name,
+    customServerMessageHtml = customServerMessageHtml,
     category = category,
     colorTagHex = colorTagHex,
     tagsJson = dbJson.encodeToString(tags),

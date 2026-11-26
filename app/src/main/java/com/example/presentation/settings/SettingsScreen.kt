@@ -94,14 +94,23 @@ fun SettingsScreen(
         }
     }
 
-    var localShareIps by remember { mutableStateOf(LocalNetworkHelper.getLocalWifiAndHotspotIps()) }
+    var proxyPortInput by remember { mutableStateOf(settings.wifiProxySharePort.toString()) }
+    var proxyPortError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(settings.wifiProxySharePort) {
+        val currentParsed = proxyPortInput.toIntOrNull()
+        if (currentParsed != settings.wifiProxySharePort && proxyPortError == null) {
+            proxyPortInput = settings.wifiProxySharePort.toString()
+        }
+    }
+
+    var localInterfaceIps by remember { mutableStateOf(LocalNetworkHelper.getActiveInterfaceAddresses()) }
     var isIgnoringBatteryOpt by remember { mutableStateOf(checkIgnoringBatteryOptimizations(context)) }
 
     DisposableEffect(lifecycleOwner, context) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 isIgnoringBatteryOpt = checkIgnoringBatteryOptimizations(context)
-                localShareIps = LocalNetworkHelper.getLocalWifiAndHotspotIps()
+                localInterfaceIps = LocalNetworkHelper.getActiveInterfaceAddresses()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -184,7 +193,8 @@ fun SettingsScreen(
                 ) { v -> onUpdateSettings { it.copy(showSpeedInNotification = v) } }
 
                 SettingSwitchRow(
-                    title = "Omitir redes locales (LAN Bypass)",
+                    title = "Permitir acceso a red local (Bypass LAN / CGNAT)",
+                    subtitle = "Excluye 10.x, 172.16-31.x, 192.168.x y 100.64.0.0/10 del túnel VPN",
                     checked = settings.bypassLan,
                     testTag = "settings_bypass_lan_switch"
                 ) { v -> onUpdateSettings { it.copy(bypassLan = v) } }
@@ -196,7 +206,7 @@ fun SettingsScreen(
                 ) { v -> onUpdateSettings { it.copy(ipv6Enabled = v) } }
             }
 
-            // 2. Wi-Fi / Hotspot Proxy Sharing (0.0.0.0:8080)
+            // 2. Wi-Fi / Hotspot Proxy Sharing (0.0.0.0:<port>)
             GlassCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.WifiTethering, contentDescription = null, tint = GruvboxAqua)
@@ -205,17 +215,53 @@ fun SettingsScreen(
                 }
                 Spacer(Modifier.height(6.dp))
                 SettingSwitchRow(
-                    title = "Compartir red (Proxy Wi-Fi en 0.0.0.0:${settings.wifiProxySharePort})",
-                    subtitle = "Permite que otros dispositivos usen el túnel mediante Proxy HTTP o SOCKS5",
+                    title = "Compartir red (Proxy Wi-Fi/Hotspot)",
+                    subtitle = "HTTP plano + HTTPS CONNECT + SOCKS5 en 0.0.0.0:${settings.wifiProxySharePort}",
                     checked = settings.wifiProxyShareEnabled,
                     testTag = "settings_wifi_proxy_switch"
                 ) { enabled ->
-                    localShareIps = LocalNetworkHelper.getLocalWifiAndHotspotIps()
+                    localInterfaceIps = LocalNetworkHelper.getActiveInterfaceAddresses()
                     onUpdateSettings { it.copy(wifiProxyShareEnabled = enabled) }
                 }
 
                 Spacer(Modifier.height(8.dp))
-                val primaryIp = localShareIps.firstOrNull()
+                OutlinedTextField(
+                    value = proxyPortInput,
+                    onValueChange = { raw ->
+                        val digitsOnly = raw.filter { it.isDigit() }.take(5)
+                        proxyPortInput = digitsOnly
+                        val parsed = digitsOnly.toIntOrNull()
+                        when {
+                            digitsOnly.isEmpty() -> {
+                                proxyPortError = "Ingresa un puerto entre 1024 y 65535."
+                            }
+                            parsed == null || parsed !in 1024..65535 -> {
+                                proxyPortError = "Puerto permitido: 1024 a 65535 (ej. 8080, 8181, 3128)."
+                            }
+                            else -> {
+                                proxyPortError = null
+                                onUpdateSettings { it.copy(wifiProxySharePort = parsed) }
+                            }
+                        }
+                    },
+                    label = { Text("Puerto del Proxy compartido") },
+                    supportingText = {
+                        Text(
+                            text = proxyPortError
+                                ?: "Por defecto: 8080 · Al cambiar se reinicia el proxy en el nuevo puerto",
+                            color = if (proxyPortError != null) GruvboxRed else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    isError = proxyPortError != null,
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_wifi_proxy_port_input")
+                )
+
+                Spacer(Modifier.height(8.dp))
+                val primaryIp = localInterfaceIps.firstOrNull()?.ipAddress
                 val endpointText = if (primaryIp != null) {
                     "$primaryIp:${settings.wifiProxySharePort}"
                 } else {
@@ -251,7 +297,7 @@ fun SettingsScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "IP y Puerto Proxy local",
+                                    text = "IP Principal y Puerto Proxy",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -261,29 +307,16 @@ fun SettingsScreen(
                                     color = MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.testTag("settings_wifi_proxy_address")
                                 )
-                                if (localShareIps.size > 1) {
-                                    Text(
-                                        text = "Otras IPs: ${localShareIps.drop(1).joinToString { "$it:${settings.wifiProxySharePort}" }}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                } else if (primaryIp == null) {
-                                    Text(
-                                        text = "Activa Wi-Fi o Zona Wi-Fi para obtener tu IP local (ej. 192.168.43.1)",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
                             }
                             Row {
                                 IconButton(
                                     onClick = {
-                                        localShareIps = LocalNetworkHelper.getLocalWifiAndHotspotIps()
+                                        localInterfaceIps = LocalNetworkHelper.getActiveInterfaceAddresses()
                                     }
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Refresh,
-                                        contentDescription = "Actualizar IP local"
+                                        contentDescription = "Actualizar IPs locales"
                                     )
                                 }
                                 IconButton(
@@ -300,6 +333,54 @@ fun SettingsScreen(
                                     )
                                 }
                             }
+                        }
+
+                        if (localInterfaceIps.isNotEmpty()) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = "Interfaces activas disponibles:",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            localInterfaceIps.forEach { iface ->
+                                val fullAddr = "${iface.ipAddress}:${settings.wifiProxySharePort}"
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "${iface.categoryLabel} (${iface.interfaceName}): $fullAddr",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    IconButton(
+                                        onClick = {
+                                            copyToClipboard(context, "Proxy ${iface.categoryLabel}", fullAddr)
+                                            onShowMessage("Copiado: $fullAddr")
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ContentCopy,
+                                            contentDescription = "Copiar $fullAddr",
+                                            tint = GruvboxAqua,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = "Activa Wi-Fi, Hotspot o Tethering USB para detectar IPs (192.168.x.x / 100.x.x.x)",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }

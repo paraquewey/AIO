@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.IpPrefix
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -15,7 +16,9 @@ import com.example.AioTunnelApplication
 import com.example.MainActivity
 import com.example.R
 import com.example.core.logger.AppLogger
+import com.example.core.network.VpnRouteHelper
 import com.example.domain.models.ConnectionState
+import com.example.domain.models.ServerMessageMode
 import com.example.domain.models.SplitTunnelMode
 import com.example.domain.models.TunnelProfile
 import com.example.engines.adapter.EngineContext
@@ -25,6 +28,8 @@ import com.example.engines.proxy.WifiShareProxyServer
 import com.example.vpn.monitor.NetworkMonitor
 import com.example.vpn.tun.DnsManager
 import com.example.vpn.tun.TunPacketRouter
+import java.net.InetAddress
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -144,7 +149,8 @@ class AioVpnService : VpnService() {
         }
 
         // Establish Android TUN interface AFTER engine authentication succeeds
-        val tunFd = establishTunInterface(profile, dnsConfig)
+        val effectiveBypassLan = appSettings.bypassLan && profile.bypassLan
+        val tunFd = establishTunInterface(profile, dnsConfig, effectiveBypassLan)
         if (tunFd == null) {
             engine.stop()
             engine.release()
@@ -174,9 +180,14 @@ class AioVpnService : VpnService() {
         connMgr.resetRetryCounter()
 
         startNetworkMonitor(profile.id)
-        startWifiProxyObserver(engine, statsMgr, connMgr)
+        startWifiProxyObserver(engine, statsMgr, connMgr, profile.bypassLan)
         startEngineDropWatcher(engine, profile.id, profile.name, connMgr)
 
+        val originalBanner = if (profile.serverMessageMode == ServerMessageMode.ORIGINAL) {
+            engine.getServerBanner()
+        } else {
+            null
+        }
         connMgr.setState(
             ConnectionState.Connected(
                 profileId = profile.id,
@@ -184,7 +195,10 @@ class AioVpnService : VpnService() {
                 protocol = profile.protocol,
                 serverEndpoint = "${profile.host}:${profile.port}",
                 exitIp = null,
-                latencyMs = profile.lastLatencyMs
+                latencyMs = profile.lastLatencyMs,
+                serverMessageMode = profile.serverMessageMode,
+                customServerMessageHtml = profile.customServerMessageHtml,
+                originalServerBanner = originalBanner
             )
         )
         AppLogger.info(
@@ -220,13 +234,16 @@ class AioVpnService : VpnService() {
     private fun startWifiProxyObserver(
         engine: TunnelEngine,
         statsMgr: com.example.core.stats.StatisticsManager,
-        connMgr: com.example.core.connection.ConnectionManager
+        connMgr: com.example.core.connection.ConnectionManager,
+        profileBypassLan: Boolean
     ) {
         wifiShareObserverJob?.cancel()
         val app = application as AioTunnelApplication
+        val bypassFlag = AtomicBoolean(profileBypassLan)
         wifiShareObserverJob = serviceScope.launch(Dispatchers.IO) {
             var currentPort: Int? = null
             app.settingsRepository.settings.collect { settings ->
+                bypassFlag.set(settings.bypassLan && profileBypassLan)
                 val desiredPort = if (settings.wifiProxyShareEnabled) {
                     settings.wifiProxySharePort.coerceIn(1024, 65535)
                 } else null
@@ -239,10 +256,15 @@ class AioVpnService : VpnService() {
                 } else if (desiredPort != currentPort || wifiShareProxy == null) {
                     runCatching { wifiShareProxy?.close() }
                     wifiShareProxy = null
+                    val timeoutMs = settings.connectionTimeoutSeconds.coerceIn(1, 999) * 1_000
                     val server = WifiShareProxyServer(
                         listenPort = desiredPort,
                         openTunnel = { host, port -> engine.openTcpTunnel(host, port) },
-                        statisticsManager = statsMgr
+                        statisticsManager = statsMgr,
+                        context = applicationContext,
+                        protectSocket = { sock -> protect(sock) },
+                        isBypassLanEnabled = { bypassFlag.get() },
+                        connectTimeoutMs = timeoutMs
                     )
                     runCatching {
                         val bound = server.start()
@@ -289,7 +311,8 @@ class AioVpnService : VpnService() {
 
     private fun establishTunInterface(
         profile: TunnelProfile,
-        dnsConfig: DnsManager.ResolvedDnsConfig
+        dnsConfig: DnsManager.ResolvedDnsConfig,
+        bypassLan: Boolean
     ): ParcelFileDescriptor? {
         return runCatching {
             val builder = Builder()
@@ -305,7 +328,27 @@ class AioVpnService : VpnService() {
                         addDnsServer(dnsConfig.secondaryDns)
                     }
                 }
-                .addRoute("0.0.0.0", 0)
+
+            if (bypassLan) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    builder.addRoute("0.0.0.0", 0)
+                    VpnRouteHelper.EXCLUDED_LAN_CGNAT_CIDRS.forEach { cidr ->
+                        builder.excludeRoute(IpPrefix(InetAddress.getByName(cidr.address), cidr.prefixLength))
+                    }
+                    AppLogger.info(TAG, "Bypass LAN/CGNAT activo (Android 13+ excludeRoute)")
+                } else {
+                    val allowedPublicRoutes = VpnRouteHelper.computeAllowedPublicIpv4Routes()
+                    allowedPublicRoutes.forEach { cidr ->
+                        builder.addRoute(cidr.address, cidr.prefixLength)
+                    }
+                    AppLogger.info(
+                        TAG,
+                        "Bypass LAN/CGNAT activo (${allowedPublicRoutes.size} rutas públicas CIDR sin LAN/CGNAT)"
+                    )
+                }
+            } else {
+                builder.addRoute("0.0.0.0", 0)
+            }
 
             if (profile.enableIpv6) {
                 builder.addAddress("fd89:1122:3344::2", 126)

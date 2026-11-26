@@ -14,7 +14,10 @@ sealed class ConnectionState {
         val exitCountryCode: String? = null,
         val exitCity: String? = null,
         val latencyMs: Long? = null,
-        val connectedSinceMillis: Long = System.currentTimeMillis()
+        val connectedSinceMillis: Long = System.currentTimeMillis(),
+        val serverMessageMode: ServerMessageMode = ServerMessageMode.ORIGINAL,
+        val customServerMessageHtml: String = "",
+        val originalServerBanner: String? = null
     ) : ConnectionState()
     data class Reconnecting(val profileName: String, val attempt: Int, val reason: String) : ConnectionState()
     data class Disconnecting(val profileName: String) : ConnectionState()

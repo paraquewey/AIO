@@ -43,6 +43,9 @@ data class TunnelProfile(
     val mtu: Int = 1500,
     val splitTunnelMode: SplitTunnelMode = SplitTunnelMode.ALL_APPS,
     val splitTunnelPackages: List<String> = emptyList(),
+    // Custom Server Message (HTML/CSS/JS)
+    val serverMessageMode: ServerMessageMode = ServerMessageMode.ORIGINAL,
+    val customServerMessageHtml: String = "",
     // Organization & Metadata
     val category: String = "General",
     val colorTagHex: Long = 0xFFFE8019,

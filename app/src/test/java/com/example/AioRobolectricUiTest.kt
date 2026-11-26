@@ -18,6 +18,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.data.database.AioDatabase
 import com.example.data.database.toDomain
 import com.example.data.database.toEntity
+import com.example.domain.models.ServerMessageMode
 import com.example.domain.models.TunnelProfile
 import com.example.domain.models.TunnelProtocol
 import kotlinx.coroutines.test.runTest
@@ -75,7 +76,11 @@ class AioRobolectricUiTest {
         composeRule.onAllNodesWithText("Rango permitido: mínimo 1 s y máximo 999 s.").fetchSemanticsNodes()
             .let { org.junit.Assert.assertTrue(it.isNotEmpty()) }
 
+        composeRule.onNodeWithTag("settings_bypass_lan_switch").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("settings_wifi_proxy_switch").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_wifi_proxy_port_input").performScrollTo().performTextClearance()
+        composeRule.onNodeWithTag("settings_wifi_proxy_port_input").performTextInput("8181")
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("settings_wifi_proxy_address").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("settings_copy_proxy_ip_button").performScrollTo().assertIsDisplayed()
@@ -95,6 +100,10 @@ class AioRobolectricUiTest {
         composeRule.onNodeWithTag("editor_raw_payload_input").performScrollTo().performTextInput("HEAD / HTTP/1.1[crlf]Host: [host][crlf][crlf][split]")
         composeRule.onNodeWithTag("editor_dns1_input").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("editor_dns2_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("editor_server_msg_mode_custom").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("editor_server_msg_html_input").performScrollTo()
+            .performTextInput("<style>.b{color:#B8BB26;}</style><div class='b'>Hola VPN</div>")
         composeRule.onNodeWithTag("editor_save_button").performClick()
         composeRule.waitForIdle()
 
@@ -124,7 +133,9 @@ class AioRobolectricUiTest {
             useCustomDns = true,
             dnsServer = "94.140.14.15",
             dnsServerSecondary = "94.140.15.15",
-            rawHttpPayload = samplePayload
+            rawHttpPayload = samplePayload,
+            serverMessageMode = ServerMessageMode.CUSTOM_HTML,
+            customServerMessageHtml = "<b>Bienvenido</b>"
         )
         db.tunnelProfileDao().upsert(profile.toEntity())
         val loaded = db.tunnelProfileDao().getById(profile.id)?.toDomain()
@@ -134,11 +145,13 @@ class AioRobolectricUiTest {
         assertEquals("94.140.14.15", loaded?.dnsServer)
         assertEquals("94.140.15.15", loaded?.dnsServerSecondary)
         assertEquals(samplePayload, loaded?.rawHttpPayload)
+        assertEquals(ServerMessageMode.CUSTOM_HTML, loaded?.serverMessageMode)
+        assertEquals("<b>Bienvenido</b>", loaded?.customServerMessageHtml)
         db.close()
     }
 
     @Test
-    fun `room migration 1 to 4 preserves profiles and adds rawHttpPayload and udpgwPort columns`() {
+    fun `room migration 1 to 5 preserves profiles and adds server message columns`() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val dbName = "migration_test_${System.nanoTime()}.db"
         val factory = FrameworkSQLiteOpenHelperFactory()
@@ -207,14 +220,18 @@ class AioRobolectricUiTest {
             AioDatabase.MIGRATION_1_2.migrate(v1Db)
             AioDatabase.MIGRATION_2_3.migrate(v1Db)
             AioDatabase.MIGRATION_3_4.migrate(v1Db)
-            v1Db.query("SELECT dnsServer, dnsServerSecondary, rawHttpPayload, udpgwPort FROM tunnel_profiles WHERE id = 'legacy-1'")
-                .use { cursor ->
-                    assertEquals(true, cursor.moveToFirst())
-                    assertEquals("94.140.14.15", cursor.getString(0))
-                    assertEquals("1.0.0.1", cursor.getString(1))
-                    assertEquals("", cursor.getString(2))
-                    assertEquals(7300, cursor.getInt(3))
-                }
+            AioDatabase.MIGRATION_4_5.migrate(v1Db)
+            v1Db.query(
+                "SELECT dnsServer, dnsServerSecondary, rawHttpPayload, udpgwPort, serverMessageModeName, customServerMessageHtml FROM tunnel_profiles WHERE id = 'legacy-1'"
+            ).use { cursor ->
+                assertEquals(true, cursor.moveToFirst())
+                assertEquals("94.140.14.15", cursor.getString(0))
+                assertEquals("1.0.0.1", cursor.getString(1))
+                assertEquals("", cursor.getString(2))
+                assertEquals(7300, cursor.getInt(3))
+                assertEquals("ORIGINAL", cursor.getString(4))
+                assertEquals("", cursor.getString(5))
+            }
         }
         context.deleteDatabase(dbName)
     }

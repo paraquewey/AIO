@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import com.example.domain.models.AppSettings
 import com.example.domain.models.DnsMode
 import com.example.domain.models.ProfileSecrets
+import com.example.domain.models.ServerMessageMode
 import com.example.domain.models.SplitTunnelMode
 import com.example.domain.models.SshAuthMethod
 import com.example.domain.models.TransportType
@@ -159,6 +160,12 @@ fun ProfileEditorScreen(
             addAll(existingProfile?.splitTunnelPackages ?: emptyList())
         }
     }
+    var serverMessageMode by remember {
+        mutableStateOf(existingProfile?.serverMessageMode ?: ServerMessageMode.ORIGINAL)
+    }
+    var customServerMessageHtml by remember {
+        mutableStateOf(existingProfile?.customServerMessageHtml ?: "")
+    }
     var showAppPicker by remember { mutableStateOf(false) }
     var validationError by remember { mutableStateOf<String?>(null) }
 
@@ -245,6 +252,8 @@ fun ProfileEditorScreen(
                                 mtu = parsedMtu,
                                 splitTunnelMode = splitMode,
                                 splitTunnelPackages = selectedPackages.toList(),
+                                serverMessageMode = serverMessageMode,
+                                customServerMessageHtml = customServerMessageHtml,
                                 category = category.trim().ifBlank { "General" },
                                 colorTagHex = colorTagHex,
                                 tags = tags,
@@ -711,6 +720,60 @@ fun ProfileEditorScreen(
                                 }
                             )
                         }
+                    }
+                }
+
+                // Custom Server Message (HTML / CSS / JS)
+                GlassCard {
+                    Text("Mensaje del Servidor (Server Message)", style = MaterialTheme.typography.titleMedium, color = GruvboxPurple)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "Controla cómo se muestra el banner al conectarse en la consola de registros.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        ServerMessageMode.entries.forEach { mode ->
+                            val chipTag = when (mode) {
+                                ServerMessageMode.ORIGINAL -> "editor_server_msg_mode_original"
+                                ServerMessageMode.HIDDEN -> "editor_server_msg_mode_hidden"
+                                ServerMessageMode.CUSTOM_HTML -> "editor_server_msg_mode_custom"
+                            }
+                            FilterChip(
+                                selected = serverMessageMode == mode,
+                                onClick = { serverMessageMode = mode },
+                                label = { Text(mode.label) },
+                                modifier = Modifier.testTag(chipTag)
+                            )
+                        }
+                    }
+                    if (serverMessageMode == ServerMessageMode.CUSTOM_HTML) {
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = customServerMessageHtml,
+                            onValueChange = { customServerMessageHtml = it },
+                            label = { Text("Código HTML / CSS del mensaje") },
+                            placeholder = {
+                                Text("<style>@keyframes pulse{0%{opacity:.6}50%{opacity:1}100%{opacity:.6}}</style><div style=\"animation:pulse 2s infinite;color:#B8BB26;\">Servidor conectado</div>")
+                            },
+                            supportingText = {
+                                Text(
+                                    "Admite HTML, estilos <style> y animaciones CSS @keyframes en WebView sin acceso externo a red.",
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            },
+                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            singleLine = false,
+                            minLines = 5,
+                            maxLines = 12,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("editor_server_msg_html_input")
+                        )
                     }
                 }
             }

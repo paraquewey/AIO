@@ -49,6 +49,9 @@ object RawTcpPayloadExecutor {
     ): Socket {
         val rawSocket = Socket()
         rawSocket.tcpNoDelay = true
+        rawSocket.keepAlive = true
+        runCatching { rawSocket.receiveBufferSize = SOCKET_BUFFER_BYTES }
+        runCatching { rawSocket.sendBufferSize = SOCKET_BUFFER_BYTES }
         if (protectSocket != null && !protectSocket(rawSocket)) {
             rawSocket.close()
             throw IOException("VpnService.protect() rechazó el socket (prevención de bucle recursivo).")
@@ -303,4 +306,5 @@ object RawTcpPayloadExecutor {
         profile.protocol == TunnelProtocol.HTTPS_PROXY || profile.tlsEnabled
 
     private const val MAX_DRAIN_BODY_BYTES = 65_536L
+    private const val SOCKET_BUFFER_BYTES = 256 * 1024
 }

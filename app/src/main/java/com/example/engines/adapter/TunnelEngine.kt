@@ -100,6 +100,7 @@ interface TunnelEngine {
     suspend fun openTcpTunnel(targetHost: String, targetPort: Int): TunnelStream
     suspend fun openUdpRelay(): UdpRelaySession? = null
     fun getLocalSocksPort(): Int? = null
+    fun getServerBanner(): String? = null
     fun getStatistics(): TunnelStatistics
     fun release()
 }

@@ -53,6 +53,9 @@ class LocalSocks5Server(
         var tunnel: TunnelStream? = null
         try {
             client.tcpNoDelay = true
+            client.keepAlive = true
+            runCatching { client.receiveBufferSize = 256 * 1024 }
+            runCatching { client.sendBufferSize = 256 * 1024 }
             client.soTimeout = 30_000
             val input = DataInputStream(client.getInputStream())
             val output = client.getOutputStream()
@@ -123,14 +126,17 @@ class LocalSocks5Server(
 
             val activeTunnel = tunnel
             val upstreamJob = scope.launch {
-                val buf = ByteArray(8192)
+                val buf = ByteArray(65_536)
                 try {
                     while (isActive && running.get()) {
                         val n = input.read(buf)
                         if (n <= 0) break
                         activeTunnel.outputStream.write(buf, 0, n)
-                        activeTunnel.outputStream.flush()
+                        if (input.available() == 0) {
+                            activeTunnel.outputStream.flush()
+                        }
                     }
+                    runCatching { activeTunnel.outputStream.flush() }
                 } catch (_: Throwable) {
                 } finally {
                     activeTunnel.halfCloseOutput()
@@ -138,22 +144,25 @@ class LocalSocks5Server(
             }
 
             val downstreamJob = scope.launch {
-                val buf = ByteArray(8192)
+                val buf = ByteArray(65_536)
                 try {
                     while (isActive && running.get()) {
                         val n = activeTunnel.inputStream.read(buf)
                         if (n <= 0) break
                         output.write(buf, 0, n)
-                        output.flush()
+                        if (activeTunnel.inputStream.available() == 0) {
+                            output.flush()
+                        }
                     }
+                    runCatching { output.flush() }
                 } catch (_: Throwable) {
                 } finally {
                     runCatching { client.shutdownOutput() }
                 }
             }
 
-            upstreamJob.join()
             downstreamJob.join()
+            upstreamJob.join()
         } catch (_: Throwable) {
         } finally {
             runCatching { tunnel?.close() }

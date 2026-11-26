@@ -1,6 +1,7 @@
 package com.example
 
 import com.example.core.logger.AppLogger
+import com.example.core.network.VpnRouteHelper
 import com.example.core.stats.StatisticsManager
 import com.example.domain.models.EngineFamily
 import com.example.domain.models.ProfileSecrets
@@ -14,6 +15,9 @@ import com.example.engines.adapter.TunnelStream
 import com.example.engines.http.RawTcpPayloadExecutor
 import com.example.engines.proxy.WifiShareProxyServer
 import com.example.vpn.tun.DnsManager
+import org.junit.Assert.assertFalse
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.runTest
@@ -284,5 +288,121 @@ class HttpAutoReplaceAndWifiProxyTest {
         assertEquals(0L, statsMgr.stats.value.peakDownloadBytesPerSec)
         assertEquals(0L, statsMgr.stats.value.peakUploadBytesPerSec)
         statsMgr.stopSession()
+    }
+
+    @Test
+    fun `vpn route helper excludes LAN and CGNAT 100_64_0_0_10 cleanly from inverse CIDR routes`() {
+        val allowed = VpnRouteHelper.computeAllowedPublicIpv4Routes()
+        assertTrue(allowed.isNotEmpty())
+
+        fun isRoutedToVpn(ip: String): Boolean {
+            val ipLong = VpnRouteHelper.ipv4ToLongOrNull(ip)!!
+            return allowed.any { it.contains(ipLong) }
+        }
+
+        // Local, Tethering, and CGNAT IPs MUST be excluded
+        listOf(
+            "10.0.0.1", "10.255.255.254",
+            "100.64.0.1", "100.85.227.228", "100.127.255.254",
+            "127.0.0.1", "169.254.10.20",
+            "172.16.0.1", "172.31.255.254",
+            "192.168.0.1", "192.168.43.1"
+        ).forEach { localIp ->
+            assertFalse("Local/CGNAT IP $localIp should NOT enter TUN", isRoutedToVpn(localIp))
+            assertTrue("isLocalOrCgnatHost($localIp) must be true", VpnRouteHelper.isLocalOrCgnatHost(localIp))
+        }
+
+        // Public IPs including CGNAT boundary neighbors MUST enter TUN
+        listOf(
+            "1.1.1.1", "8.8.8.8", "9.255.255.255", "11.0.0.1",
+            "100.63.255.255", "100.128.0.1",
+            "172.15.255.255", "172.32.0.1",
+            "192.167.255.255", "192.169.0.1"
+        ).forEach { publicIp ->
+            assertTrue("Public IP $publicIp MUST enter TUN", isRoutedToVpn(publicIp))
+            assertFalse("isLocalOrCgnatHost($publicIp) must be false", VpnRouteHelper.isLocalOrCgnatHost(publicIp))
+        }
+
+        // Verify exact non-overlapping mathematical complement of 2^32
+        val totalAllowed = allowed.sumOf { 1L shl (32 - it.prefixLength) }
+        val totalExcluded = VpnRouteHelper.EXCLUDED_LAN_CGNAT_CIDRS.sumOf { 1L shl (32 - it.prefixLength) }
+        assertEquals(1L shl 32, totalAllowed + totalExcluded)
+    }
+
+    @Test
+    fun `wifi proxy handles plain HTTP forwarding, local LAN bypass protect(), and 256KB downloads`() = runTest {
+        // Local HTTP server simulating e.g. 100.85.227.228:8181/share on loopback
+        val localServer = ServerSocket(0, 5, InetAddress.getByName("127.0.0.1"))
+        val largePayload = ByteArray(262_144) { idx -> ('A'.code + (idx % 26)).toByte() }
+        val receivedHeadRef = java.util.concurrent.atomic.AtomicReference("")
+        val localServerThread = thread(isDaemon = true) {
+            localServer.use { ss ->
+                ss.accept().use { client ->
+                    val raw = ByteArrayOutputStream()
+                    val buf = ByteArray(2048)
+                    val inp = client.getInputStream()
+                    while (true) {
+                        val n = inp.read(buf)
+                        if (n <= 0) break
+                        raw.write(buf, 0, n)
+                        if (raw.toString(StandardCharsets.ISO_8859_1.name()).contains("\r\n\r\n")) break
+                    }
+                    receivedHeadRef.set(raw.toString(StandardCharsets.ISO_8859_1.name()))
+                    val out = client.getOutputStream()
+                    val header = "HTTP/1.1 200 OK\r\nContent-Length: ${largePayload.size}\r\nConnection: close\r\n\r\n"
+                    out.write(header.toByteArray(StandardCharsets.ISO_8859_1))
+                    out.write(largePayload)
+                    out.flush()
+                }
+            }
+        }
+
+        val remoteTunnelCalls = AtomicInteger(0)
+        val localSocketProtected = AtomicBoolean(false)
+        val proxyServer = WifiShareProxyServer(
+            listenPort = 0,
+            openTunnel = { _, _ ->
+                remoteTunnelCalls.incrementAndGet()
+                error("Should not hit remote SSH tunnel for local bypass IP!")
+            },
+            protectSocket = {
+                localSocketProtected.set(true)
+                true
+            },
+            isBypassLanEnabled = { true }
+        )
+        val proxyPort = proxyServer.start()
+
+        Socket(InetAddress.getByName("127.0.0.1"), proxyPort).use { client ->
+            client.soTimeout = 5_000
+            val out = client.getOutputStream()
+            val req = "GET http://127.0.0.1:${localServer.localPort}/share?file=big HTTP/1.1\r\n" +
+                "Host: 127.0.0.1:${localServer.localPort}\r\n" +
+                "Proxy-Connection: keep-alive\r\n" +
+                "Proxy-Authorization: Basic dXNlcjpwYXNz\r\n\r\n"
+            out.write(req.toByteArray(StandardCharsets.ISO_8859_1))
+            out.flush()
+
+            val fullResp = client.getInputStream().readBytes()
+            val sep = "\r\n\r\n".toByteArray(StandardCharsets.ISO_8859_1)
+            val headerEnd = fullResp.indices.first { idx ->
+                idx + sep.size <= fullResp.size &&
+                    sep.indices.all { j -> fullResp[idx + j] == sep[j] }
+            }
+            val bodyBytes = fullResp.copyOfRange(headerEnd + sep.size, fullResp.size)
+            assertEquals(largePayload.size, bodyBytes.size)
+            assertTrue(largePayload.contentEquals(bodyBytes))
+        }
+
+        localServerThread.join(3_000)
+        proxyServer.close()
+
+        val forwardedHead = receivedHeadRef.get()
+        assertTrue(forwardedHead.startsWith("GET /share?file=big HTTP/1.1\r\n"))
+        assertTrue(forwardedHead.contains("Connection: keep-alive\r\n"))
+        assertFalse(forwardedHead.contains("Proxy-Connection:", ignoreCase = true))
+        assertFalse(forwardedHead.contains("Proxy-Authorization:", ignoreCase = true))
+        assertTrue("Local bypass socket must be protected via VpnService.protect()", localSocketProtected.get())
+        assertEquals("Local LAN/CGNAT target must bypass remote SSH tunnel", 0, remoteTunnelCalls.get())
     }
 }

@@ -180,3 +180,10 @@ enum class SplitTunnelMode {
     INCLUDE_SELECTED,
     EXCLUDE_SELECTED
 }
+
+@Serializable
+enum class ServerMessageMode(val label: String) {
+    ORIGINAL("Original del servidor"),
+    HIDDEN("Ocultar mensaje (Remove Server Message)"),
+    CUSTOM_HTML("Personalizado (Custom HTML/CSS)")
+}

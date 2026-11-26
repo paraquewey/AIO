@@ -46,7 +46,10 @@ import com.example.domain.models.DiagnosticCheckResult
 import com.example.domain.models.DiagnosticStatus
 import com.example.domain.models.LogEntry
 import com.example.domain.models.LogLevel
+import com.example.domain.models.ServerMessageMode
 import com.example.presentation.components.GlassCard
+import com.example.presentation.components.ServerMessageWebView
+import com.example.presentation.components.formatServerBannerAsHtml
 import com.example.ui.theme.GruvboxAqua
 import com.example.ui.theme.GruvboxGreen
 import com.example.ui.theme.GruvboxOrange
@@ -231,6 +234,45 @@ fun DiagnosticsScreen(
                     }
                 }
                 Spacer(Modifier.height(6.dp))
+                val connectedState = connectionState as? ConnectionState.Connected
+                val serverBannerHtml = when {
+                    connectedState == null -> null
+                    connectedState.serverMessageMode == ServerMessageMode.HIDDEN -> null
+                    connectedState.serverMessageMode == ServerMessageMode.CUSTOM_HTML ->
+                        connectedState.customServerMessageHtml.takeIf { it.isNotBlank() }
+                    connectedState.serverMessageMode == ServerMessageMode.ORIGINAL ->
+                        connectedState.originalServerBanner?.takeIf { it.isNotBlank() }?.let {
+                            formatServerBannerAsHtml(it)
+                        }
+                    else -> null
+                }
+                if (serverBannerHtml != null) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+                        border = BorderStroke(1.dp, GruvboxGreen.copy(alpha = 0.45f))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp)
+                        ) {
+                            Text(
+                                text = "Mensaje del servidor",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = GruvboxGreen
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            ServerMessageWebView(
+                                htmlContent = serverBannerHtml,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("diagnostics_server_message_webview")
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
                 if (logs.isEmpty()) {
                     Text(
                         text = "Sin eventos registrados.",
