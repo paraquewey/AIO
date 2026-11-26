@@ -15,7 +15,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
@@ -26,12 +28,14 @@ import java.util.concurrent.atomic.AtomicLong
 class TunPacketRouter(
     private val tunFd: ParcelFileDescriptor,
     private val profile: TunnelProfile,
+    private val dnsConfig: DnsManager.ResolvedDnsConfig,
     private val engine: TunnelEngine,
     private val dnsManager: DnsManager,
     private val statisticsManager: StatisticsManager
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val writeMutex = Mutex()
+    private val dnsSemaphore = Semaphore(16)
     private val running = AtomicBoolean(false)
     private val outputStream = FileOutputStream(tunFd.fileDescriptor)
     private val inputStream = FileInputStream(tunFd.fileDescriptor)
@@ -104,17 +108,23 @@ class TunPacketRouter(
 
         if (udp.dstPort == 53) {
             scope.launch {
-                val dnsResp = dnsManager.resolveWireQuery(payload, profile) ?: return@launch
-                statisticsManager.recordDnsQuery()
-                statisticsManager.recordBytesReceived(dnsResp.size.toLong())
-                val replyPacket = IpPacketParser.buildIpv4UdpPacket(
-                    srcIpBytes = ip.dstIpBytes,
-                    dstIpBytes = ip.srcIpBytes,
-                    srcPort = 53,
-                    dstPort = udp.srcPort,
-                    payload = dnsResp
-                )
-                writePacketToTun(replyPacket)
+                if (!running.get()) return@launch
+                dnsSemaphore.withPermit {
+                    if (!running.get()) return@withPermit
+                    val dnsResp = dnsManager.resolveWireQueryThroughTunnel(payload, dnsConfig, engine)
+                        ?: return@withPermit
+                    if (!running.get()) return@withPermit
+                    statisticsManager.recordDnsQuery()
+                    statisticsManager.recordBytesReceived(dnsResp.size.toLong())
+                    val replyPacket = IpPacketParser.buildIpv4UdpPacket(
+                        srcIpBytes = ip.dstIpBytes,
+                        dstIpBytes = ip.srcIpBytes,
+                        srcPort = 53,
+                        dstPort = udp.srcPort,
+                        payload = dnsResp
+                    )
+                    writePacketToTun(replyPacket)
+                }
             }
         } else {
             val relay = udpRelaySession ?: return

@@ -41,6 +41,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import com.example.data.security.SshHostKeyStore
+import com.example.domain.models.ConnectionState
 import com.example.domain.models.DiagnosticCheckResult
 import com.example.domain.models.DiagnosticStatus
 import com.example.domain.models.LogEntry
@@ -60,6 +61,7 @@ fun DiagnosticsScreen(
     checks: List<DiagnosticCheckResult>,
     logs: List<LogEntry>,
     knownHosts: List<SshHostKeyStore.KnownHostRecord>,
+    connectionState: ConnectionState = ConnectionState.Disconnected,
     onRunDiagnostics: () -> Unit,
     onClearLogs: () -> Unit,
     onRemoveKnownHost: (String, Int) -> Unit,
@@ -101,6 +103,18 @@ fun DiagnosticsScreen(
             // Real Probe Cards
             GlassCard {
                 Text("Pruebas reales de red y seguridad", style = MaterialTheme.typography.titleMedium, color = GruvboxYellow)
+                Spacer(Modifier.height(4.dp))
+                val isTunnelConnected = connectionState is ConnectionState.Connected
+                Text(
+                    text = if (isTunnelConnected) {
+                        "Modo conectado: DNS y DoH se ejecutan estrictamente a través del túnel VPN activo."
+                    } else {
+                        "Modo desconectado: se prueba el endpoint respetando TLS y el acceso directo de la red actual."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isTunnelConnected) GruvboxGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("diagnostics_mode_label")
+                )
                 Spacer(Modifier.height(10.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     checks.forEach { check ->

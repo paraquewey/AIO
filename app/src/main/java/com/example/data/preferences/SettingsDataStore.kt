@@ -24,6 +24,7 @@ class SettingsDataStore(private val context: Context) {
         val FAILOVER = booleanPreferencesKey("failover_next_server")
         val DNS_MODE = stringPreferencesKey("dns_mode")
         val DNS_SERVER = stringPreferencesKey("dns_server")
+        val DNS_SERVER_SECONDARY = stringPreferencesKey("dns_server_secondary")
         val DOH_URL = stringPreferencesKey("doh_url")
         val IPV6_ENABLED = booleanPreferencesKey("ipv6_enabled")
         val BYPASS_LAN = booleanPreferencesKey("bypass_lan")
@@ -43,6 +44,7 @@ class SettingsDataStore(private val context: Context) {
                 runCatching { DnsMode.valueOf(it) }.getOrNull()
             } ?: DnsMode.DNS_OVER_HTTPS,
             defaultDnsServer = prefs[Keys.DNS_SERVER] ?: "1.1.1.1",
+            defaultDnsServerSecondary = prefs[Keys.DNS_SERVER_SECONDARY] ?: "1.0.0.1",
             defaultDohUrl = prefs[Keys.DOH_URL] ?: "https://cloudflare-dns.com/dns-query",
             ipv6Enabled = prefs[Keys.IPV6_ENABLED] ?: false,
             bypassLan = prefs[Keys.BYPASS_LAN] ?: true,
@@ -73,6 +75,7 @@ class SettingsDataStore(private val context: Context) {
                     runCatching { DnsMode.valueOf(it) }.getOrNull()
                 } ?: DnsMode.DNS_OVER_HTTPS,
                 defaultDnsServer = prefs[Keys.DNS_SERVER] ?: "1.1.1.1",
+                defaultDnsServerSecondary = prefs[Keys.DNS_SERVER_SECONDARY] ?: "1.0.0.1",
                 defaultDohUrl = prefs[Keys.DOH_URL] ?: "https://cloudflare-dns.com/dns-query",
                 ipv6Enabled = prefs[Keys.IPV6_ENABLED] ?: false,
                 bypassLan = prefs[Keys.BYPASS_LAN] ?: true,
@@ -89,6 +92,7 @@ class SettingsDataStore(private val context: Context) {
             prefs[Keys.FAILOVER] = updated.failoverToNextServer
             prefs[Keys.DNS_MODE] = updated.defaultDnsMode.name
             prefs[Keys.DNS_SERVER] = updated.defaultDnsServer
+            prefs[Keys.DNS_SERVER_SECONDARY] = updated.defaultDnsServerSecondary
             prefs[Keys.DOH_URL] = updated.defaultDohUrl
             prefs[Keys.IPV6_ENABLED] = updated.ipv6Enabled
             prefs[Keys.BYPASS_LAN] = updated.bypassLan

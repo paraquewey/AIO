@@ -2,11 +2,17 @@ package com.example
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.room.Room
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.database.AioDatabase
 import com.example.data.database.toDomain
@@ -48,6 +54,8 @@ class AioRobolectricUiTest {
         composeRule.onNodeWithTag("nav_settings").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("settings_auto_reconnect_switch").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_dns1_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_dns2_input").performScrollTo().assertIsDisplayed()
     }
 
     @Test
@@ -61,14 +69,22 @@ class AioRobolectricUiTest {
 
         composeRule.onNodeWithTag("editor_name_input").performTextInput("Test Proxy")
         composeRule.onNodeWithTag("editor_host_input").performTextInput("proxy.example.org")
+        composeRule.onNodeWithTag("editor_dns1_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("editor_dns2_input").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("editor_save_button").performClick()
         composeRule.waitForIdle()
 
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithTag("configs_create_button").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithText("Test Proxy").fetchSemanticsNodes().isNotEmpty()
+        }
         composeRule.onNodeWithText("Test Proxy").assertIsDisplayed()
     }
 
     @Test
-    fun `room database persists and queries tunnel profiles`() = runTest {
+    fun `room database persists and queries tunnel profiles with secondary dns and http method`() = runTest {
         val db = Room.inMemoryDatabaseBuilder(
             ApplicationProvider.getApplicationContext(),
             AioDatabase::class.java
@@ -76,14 +92,104 @@ class AioRobolectricUiTest {
 
         val profile = TunnelProfile(
             name = "Room Check",
-            protocol = TunnelProtocol.SOCKS5,
+            protocol = TunnelProtocol.HTTP_PROXY,
             host = "198.51.100.7",
-            port = 1080
+            port = 8080,
+            useCustomDns = true,
+            dnsServer = "94.140.14.15",
+            dnsServerSecondary = "94.140.15.15",
+            httpRequestMethod = "GET",
+            httpRequestPath = "/ws",
+            upgradeWebSocket = true
         )
         db.tunnelProfileDao().upsert(profile.toEntity())
         val loaded = db.tunnelProfileDao().getById(profile.id)?.toDomain()
         assertEquals("Room Check", loaded?.name)
-        assertEquals(TunnelProtocol.SOCKS5, loaded?.protocol)
+        assertEquals(TunnelProtocol.HTTP_PROXY, loaded?.protocol)
+        assertEquals("94.140.14.15", loaded?.dnsServer)
+        assertEquals("94.140.15.15", loaded?.dnsServerSecondary)
+        assertEquals("GET", loaded?.httpRequestMethod)
+        assertEquals(true, loaded?.upgradeWebSocket)
         db.close()
+    }
+
+    @Test
+    fun `room migration 1 to 2 adds secondary dns and http payload columns without data loss`() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val dbName = "migration_test_${System.nanoTime()}.db"
+        val factory = FrameworkSQLiteOpenHelperFactory()
+        val helper = factory.create(
+            SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name(dbName)
+                .callback(object : SupportSQLiteOpenHelper.Callback(1) {
+                    override fun onCreate(db: SupportSQLiteDatabase) {
+                        db.execSQL(
+                            """
+                            CREATE TABLE IF NOT EXISTS tunnel_profiles (
+                                id TEXT NOT NULL PRIMARY KEY,
+                                name TEXT NOT NULL,
+                                protocolName TEXT NOT NULL,
+                                host TEXT NOT NULL,
+                                port INTEGER NOT NULL,
+                                username TEXT NOT NULL,
+                                authMethodName TEXT NOT NULL,
+                                jumpHostEnabled INTEGER NOT NULL,
+                                jumpHost TEXT NOT NULL,
+                                jumpPort INTEGER NOT NULL,
+                                jumpUsername TEXT NOT NULL,
+                                jumpAuthMethodName TEXT NOT NULL,
+                                transportName TEXT NOT NULL,
+                                tlsEnabled INTEGER NOT NULL,
+                                tlsServerName TEXT NOT NULL,
+                                tlsAlpn TEXT NOT NULL,
+                                verifyTlsCertificate INTEGER NOT NULL,
+                                customConnectHeadersJson TEXT NOT NULL,
+                                dnsModeName TEXT NOT NULL,
+                                dnsServer TEXT NOT NULL,
+                                dohUrl TEXT NOT NULL,
+                                enableIpv6 INTEGER NOT NULL,
+                                bypassLan INTEGER NOT NULL,
+                                mtu INTEGER NOT NULL,
+                                splitTunnelModeName TEXT NOT NULL,
+                                splitTunnelPackagesJson TEXT NOT NULL,
+                                category TEXT NOT NULL,
+                                colorTagHex INTEGER NOT NULL,
+                                tagsJson TEXT NOT NULL,
+                                isFavorite INTEGER NOT NULL,
+                                lastLatencyMs INTEGER,
+                                createdAtMillis INTEGER NOT NULL,
+                                updatedAtMillis INTEGER NOT NULL,
+                                rawNativeConfigJson TEXT
+                            )
+                            """.trimIndent()
+                        )
+                        db.execSQL(
+                            """
+                            INSERT INTO tunnel_profiles VALUES (
+                                'legacy-1', 'Legacy Node', 'HTTP_PROXY', '192.0.2.1', 8080, '', 'PASSWORD',
+                                0, '', 22, '', 'PASSWORD', 'TCP', 0, '', 'http/1.1', 1, '{}',
+                                'DNS_OVER_HTTPS', '94.140.14.15', 'https://cloudflare-dns.com/dns-query',
+                                0, 1, 1500, 'ALL_APPS', '[]', 'General', 4294869017, '[]', 0, NULL, 1000, 1000, NULL
+                            )
+                            """.trimIndent()
+                        )
+                    }
+
+                    override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+                })
+                .build()
+        )
+        helper.writableDatabase.use { v1Db ->
+            AioDatabase.MIGRATION_1_2.migrate(v1Db)
+            v1Db.query("SELECT dnsServer, dnsServerSecondary, httpRequestMethod, upgradeWebSocket FROM tunnel_profiles WHERE id = 'legacy-1'")
+                .use { cursor ->
+                    assertEquals(true, cursor.moveToFirst())
+                    assertEquals("94.140.14.15", cursor.getString(0))
+                    assertEquals("1.0.0.1", cursor.getString(1))
+                    assertEquals("CONNECT", cursor.getString(2))
+                    assertEquals(0, cursor.getInt(3))
+                }
+        }
+        context.deleteDatabase(dbName)
     }
 }

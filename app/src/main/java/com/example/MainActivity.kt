@@ -299,6 +299,7 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
                                     checks = diagnosticResults,
                                     logs = logs,
                                     knownHosts = knownHosts,
+                                    connectionState = connectionState,
                                     onRunDiagnostics = { viewModel.runFullDiagnostics(selectedProfile) },
                                     onClearLogs = { viewModel.clearLogs() },
                                     onRemoveKnownHost = { host, port -> viewModel.removeKnownHost(host, port) },
@@ -322,6 +323,7 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
                                 ProfileEditorScreen(
                                     existingProfile = existing,
                                     existingSecrets = existingSecrets,
+                                    appSettings = settings,
                                     installedApps = installedApps,
                                     onLoadInstalledApps = { viewModel.loadInstalledLaunchableApps() },
                                     onSave = { profile, secrets ->

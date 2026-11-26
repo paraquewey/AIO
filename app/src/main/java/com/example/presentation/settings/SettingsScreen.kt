@@ -122,9 +122,21 @@ fun SettingsScreen(
                 OutlinedTextField(
                     value = settings.defaultDnsServer,
                     onValueChange = { ip -> onUpdateSettings { it.copy(defaultDnsServer = ip) } },
-                    label = { Text("Servidor DNS IPv4") },
+                    label = { Text("Servidor DNS 1 (Primario)") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_dns1_input")
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = settings.defaultDnsServerSecondary,
+                    onValueChange = { ip -> onUpdateSettings { it.copy(defaultDnsServerSecondary = ip) } },
+                    label = { Text("Servidor DNS 2 (Secundario)") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_dns2_input")
                 )
             }
 

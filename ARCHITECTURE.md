@@ -36,7 +36,7 @@ com.example
 ├── vpn/
 │   ├── service/AioVpnService.kt          # VpnService foreground, Builder TUN, Split Tunneling, onRevoke
 │   ├── tun/IpPacketParser.kt             # Codec IPv4 / TCP / UDP y checksums RFC
-│   ├── tun/DnsManager.kt                 # DNS UDP protegido y DoH RFC 8484
+│   ├── tun/DnsManager.kt                 # DNS-over-TCP / DoH por túnel con respaldo DNS1 -> DNS2
 │   ├── tun/TunPacketRouter.kt            # Router TUN en espacio de usuario -> TunnelEngine
 │   └── monitor/NetworkMonitor.kt         # Detección de cambio de red (NET_CAPABILITY_NOT_VPN)
 └── presentation/                         # Compose M3 (AMOLED + Gruvbox), ViewModel y 5 pantallas
@@ -45,6 +45,6 @@ com.example
 ## Flujo de Conexión y Prevención de Bucles
 
 1. La UI solicita `VpnService.prepare(context)` si aún no existe consentimiento del sistema.
-2. `AioVpnService` inicia en primer plano (`foregroundServiceType="specialUse"`), instancia el `TunnelEngine` correspondiente y ejecuta `engine.start(...)` **protegiendo cada socket saliente** con `VpnService.protect(socket)`.
-3. Solo tras autenticar el motor remoto se llama a `VpnService.Builder.establish()`, excluyendo explícitamente el propio paquete (`addDisallowedApplication(packageName)`) para impedir enrutamiento recursivo.
-4. `TunPacketRouter` lee paquetes IPv4 del descriptor TUN, resuelve DNS puerto 53 vía `DnsManager` (DoH o UDP protegido) y puentea flujos TCP/UDP hacia `engine.openTcpTunnel(...)` / `engine.openUdpRelay()`.
+2. `AioVpnService` inicia en primer plano (`foregroundServiceType="specialUse"`), instancia el `TunnelEngine` correspondiente y ejecuta `engine.start(...)` **protegiendo cada socket saliente del transporte** con `VpnService.protect(socket)`.
+3. Solo tras autenticar el motor remoto se llama a `VpnService.Builder.establish()`, registrando DNS primario y secundario (`addDnsServer(dns1)`, `addDnsServer(dns2)`) y excluyendo explícitamente el paquete propio (`addDisallowedApplication(packageName)`).
+4. `TunPacketRouter` lee paquetes IPv4 del descriptor TUN, intercepta consultas UDP puerto 53 y las resuelve mediante `DnsManager` estrictamente dentro del `TunnelEngine` conectado (DoH sobre túnel o DNS-over-TCP RFC 1035 con respaldo automático de DNS 1 a DNS 2), mientras puentea flujos TCP/UDP hacia `engine.openTcpTunnel(...)` / `engine.openUdpRelay()`.

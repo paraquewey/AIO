@@ -5,6 +5,7 @@ import com.example.domain.models.LogLevel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 object AppLogger {
@@ -12,6 +13,13 @@ object AppLogger {
     private val sequence = AtomicLong(0L)
     private val lock = Any()
     private val buffer = ArrayDeque<LogEntry>(MAX_ENTRIES)
+
+    private data class RateState(
+        val lastEmitMillis: Long,
+        val suppressedCount: Int
+    )
+
+    private val rateLimits = ConcurrentHashMap<String, RateState>()
 
     private val _logs = MutableStateFlow<List<LogEntry>>(emptyList())
     val logs: StateFlow<List<LogEntry>> = _logs.asStateFlow()
@@ -44,6 +52,32 @@ object AppLogger {
 
     fun info(tag: String, message: String) = log(LogLevel.INFO, tag, message)
     fun warn(tag: String, message: String) = log(LogLevel.WARN, tag, message)
+
+    fun warnRateLimited(
+        tag: String,
+        rateKey: String,
+        message: String,
+        windowMs: Long = 15_000L
+    ) {
+        val now = System.currentTimeMillis()
+        var suppressedToReport = 0
+        var shouldEmit = false
+        synchronized(rateLimits) {
+            val prev = rateLimits[rateKey]
+            if (prev == null || (now - prev.lastEmitMillis) >= windowMs) {
+                suppressedToReport = prev?.suppressedCount ?: 0
+                rateLimits[rateKey] = RateState(lastEmitMillis = now, suppressedCount = 0)
+                shouldEmit = true
+            } else {
+                rateLimits[rateKey] = prev.copy(suppressedCount = prev.suppressedCount + 1)
+            }
+        }
+        if (shouldEmit) {
+            val suffix = if (suppressedToReport > 0) " (+$suppressedToReport repetidos)" else ""
+            log(LogLevel.WARN, tag, "$message$suffix")
+        }
+    }
+
     fun error(tag: String, message: String, throwable: Throwable? = null) {
         val detail = throwable?.message?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""
         log(LogLevel.ERROR, tag, "$message$detail")
@@ -76,6 +110,9 @@ object AppLogger {
         synchronized(lock) {
             buffer.clear()
             _logs.value = emptyList()
+        }
+        synchronized(rateLimits) {
+            rateLimits.clear()
         }
     }
 }

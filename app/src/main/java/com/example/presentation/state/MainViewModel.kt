@@ -20,6 +20,7 @@ import com.example.domain.models.SshHostKeyChallenge
 import com.example.domain.models.TunnelProfile
 import com.example.domain.models.TunnelProtocol
 import com.example.domain.models.TunnelStatistics
+import com.example.engines.http.HttpConnectProxyEngine
 import com.example.vpn.tun.DnsManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -275,7 +276,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun runFullDiagnostics(activeProfile: TunnelProfile?) {
         viewModelScope.launch {
-            val runningChecks = defaultDiagnosticChecks().map {
+            val activeEngine = connectionManager.activeEngine
+            val isConnected = connectionState.value is ConnectionState.Connected && activeEngine != null
+            val currentSettings = settings.value
+            val dnsConfig = connectionManager.activeDnsConfig
+                ?: DnsManager.resolveActiveDnsConfig(activeProfile, currentSettings)
+
+            val runningChecks = defaultDiagnosticChecks(isConnected).map {
                 it.copy(status = DiagnosticStatus.RUNNING, summary = "Ejecutando prueba real...")
             }
             _diagnosticResults.value = runningChecks
@@ -284,67 +291,122 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 protectSocket = { true },
                 protectDatagramSocket = { true }
             )
-            val currentSettings = settings.value
-            val dnsIp = activeProfile?.dnsServer?.ifBlank { currentSettings.defaultDnsServer }
-                ?: currentSettings.defaultDnsServer
-            val dohUrl = activeProfile?.dohUrl?.ifBlank { currentSettings.defaultDohUrl }
-                ?: currentSettings.defaultDohUrl
 
-            // 1. Plain DNS UDP check
-            val dnsUdpResult = withContext(Dispatchers.IO) {
+            // 1. DNS Resolution check (In-tunnel TCP when connected vs direct UDP when disconnected)
+            val dnsResult = withContext(Dispatchers.IO) {
                 val t0 = System.currentTimeMillis()
                 val query = dnsMgr.buildSampleDnsQuery("example.com")
-                val resp = dnsMgr.resolveViaProtectedUdp(query, dnsIp)
-                val dt = System.currentTimeMillis() - t0
-                if (resp != null && resp.size > 12) {
-                    DiagnosticCheckResult(
-                        id = "dns_udp",
-                        title = "Resolución DNS UDP ($dnsIp:53)",
-                        status = DiagnosticStatus.PASSED,
-                        summary = "Respuesta válida (${resp.size} bytes)",
-                        latencyMs = dt,
-                        timestampMillis = System.currentTimeMillis()
+                if (isConnected) {
+                    val engine = activeEngine!!
+                    val res = dnsMgr.resolveViaTunnelTcpWithFallback(
+                        queryBytes = query,
+                        primaryDns = dnsConfig.primaryDns,
+                        secondaryDns = dnsConfig.secondaryDns,
+                        engine = engine
                     )
+                    val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                    if (res.responseBytes != null && res.responseBytes.size >= 12) {
+                        DiagnosticCheckResult(
+                            id = "dns_udp",
+                            title = "DNS en túnel (${res.serverLabel})",
+                            status = DiagnosticStatus.PASSED,
+                            summary = if (res.usedFallback) {
+                                "DNS 1 no respondió; respaldo DNS 2 operativo (${res.responseBytes.size} bytes)"
+                            } else {
+                                "Respuesta DNS-over-TCP dentro del túnel (${res.responseBytes.size} bytes)"
+                            },
+                            latencyMs = dt,
+                            timestampMillis = System.currentTimeMillis()
+                        )
+                    } else {
+                        DiagnosticCheckResult(
+                            id = "dns_udp",
+                            title = "DNS en túnel (${dnsConfig.primaryDns} / ${dnsConfig.secondaryDns})",
+                            status = DiagnosticStatus.FAILED,
+                            summary = res.errorSummary ?: "Sin respuesta DNS por TCP dentro del túnel",
+                            timestampMillis = System.currentTimeMillis()
+                        )
+                    }
                 } else {
-                    DiagnosticCheckResult(
-                        id = "dns_udp",
-                        title = "Resolución DNS UDP ($dnsIp:53)",
-                        status = DiagnosticStatus.FAILED,
-                        summary = "Sin respuesta UDP desde $dnsIp:53",
-                        timestampMillis = System.currentTimeMillis()
+                    val res = dnsMgr.resolveViaProtectedUdpWithFallback(
+                        queryBytes = query,
+                        primaryDns = dnsConfig.primaryDns,
+                        secondaryDns = dnsConfig.secondaryDns
                     )
+                    val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                    if (res.responseBytes != null && res.responseBytes.size >= 12) {
+                        DiagnosticCheckResult(
+                            id = "dns_udp",
+                            title = "DNS directo sin túnel (${res.serverLabel})",
+                            status = DiagnosticStatus.PASSED,
+                            summary = "Salida UDP directa operativa (${res.responseBytes.size} bytes)",
+                            latencyMs = dt,
+                            timestampMillis = System.currentTimeMillis()
+                        )
+                    } else {
+                        DiagnosticCheckResult(
+                            id = "dns_udp",
+                            title = "DNS directo sin túnel (${dnsConfig.primaryDns} / ${dnsConfig.secondaryDns})",
+                            status = DiagnosticStatus.FAILED,
+                            summary = "Sin salida UDP directa desde ${dnsConfig.primaryDns}/${dnsConfig.secondaryDns} (habitual en red móvil sin saldo; al conectar usará TCP/DoH por el túnel)",
+                            timestampMillis = System.currentTimeMillis()
+                        )
+                    }
                 }
             }
-            updateDiagnosticItem(dnsUdpResult)
+            updateDiagnosticItem(dnsResult)
 
-            // 2. DoH RFC 8484 check
+            // 2. DoH RFC 8484 check (In-tunnel when connected vs direct when disconnected)
             val dohResult = withContext(Dispatchers.IO) {
                 val t0 = System.currentTimeMillis()
                 val query = dnsMgr.buildSampleDnsQuery("cloudflare.com")
-                val resp = dnsMgr.resolveViaDoh(query, dohUrl)
-                val dt = System.currentTimeMillis() - t0
-                if (resp != null && resp.size > 12) {
-                    DiagnosticCheckResult(
-                        id = "doh",
-                        title = "DNS-over-HTTPS (RFC 8484)",
-                        status = DiagnosticStatus.PASSED,
-                        summary = "DoH operativo (${resp.size} bytes)",
-                        latencyMs = dt,
-                        timestampMillis = System.currentTimeMillis()
-                    )
+                if (isConnected) {
+                    val res = dnsMgr.resolveViaTunnelDohWithDetails(query, dnsConfig, activeEngine!!)
+                    val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                    if (res.responseBytes != null && res.responseBytes.size >= 12) {
+                        DiagnosticCheckResult(
+                            id = "doh",
+                            title = "DoH por túnel (RFC 8484)",
+                            status = DiagnosticStatus.PASSED,
+                            summary = "${res.serverLabel} (${res.responseBytes.size} bytes)",
+                            latencyMs = dt,
+                            timestampMillis = System.currentTimeMillis()
+                        )
+                    } else {
+                        DiagnosticCheckResult(
+                            id = "doh",
+                            title = "DoH por túnel (RFC 8484)",
+                            status = DiagnosticStatus.FAILED,
+                            summary = "${res.errorSummary ?: "DoH no disponible"} (se usa respaldo DNS-over-TCP)",
+                            timestampMillis = System.currentTimeMillis()
+                        )
+                    }
                 } else {
-                    DiagnosticCheckResult(
-                        id = "doh",
-                        title = "DNS-over-HTTPS (RFC 8484)",
-                        status = DiagnosticStatus.FAILED,
-                        summary = "No se pudo consultar $dohUrl",
-                        timestampMillis = System.currentTimeMillis()
-                    )
+                    val resp = dnsMgr.resolveViaDohDirect(query, dnsConfig.dohUrl)
+                    val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                    if (resp != null && resp.size >= 12) {
+                        DiagnosticCheckResult(
+                            id = "doh",
+                            title = "DoH directo sin túnel (RFC 8484)",
+                            status = DiagnosticStatus.PASSED,
+                            summary = "DoH directo operativo (${resp.size} bytes)",
+                            latencyMs = dt,
+                            timestampMillis = System.currentTimeMillis()
+                        )
+                    } else {
+                        DiagnosticCheckResult(
+                            id = "doh",
+                            title = "DoH directo sin túnel (RFC 8484)",
+                            status = DiagnosticStatus.FAILED,
+                            summary = "Sin salida directa hacia ${dnsConfig.dohUrl} (en red sin salida externa el DoH se enrutará por el túnel al conectar)",
+                            timestampMillis = System.currentTimeMillis()
+                        )
+                    }
                 }
             }
             updateDiagnosticItem(dohResult)
 
-            // 3. Server TCP/TLS probe
+            // 3. Server Endpoint / Tunnel Flow probe
             val serverResult = withContext(Dispatchers.IO) {
                 if (activeProfile == null) {
                     DiagnosticCheckResult(
@@ -354,28 +416,105 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         summary = "Selecciona o crea un perfil para probar el endpoint.",
                         timestampMillis = System.currentTimeMillis()
                     )
-                } else {
+                } else if (isConnected) {
+                    val engine = activeEngine!!
                     val t0 = System.currentTimeMillis()
-                    val latency = probeTcpHandshakeMs(activeProfile)
-                    val dt = System.currentTimeMillis() - t0
-                    if (latency != null) {
-                        profileRepo.updateLatency(activeProfile.id, latency)
+                    val exitIp = dnsMgr.fetchExitIpThroughTunnel(engine)
+                    val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                    if (exitIp != null) {
                         DiagnosticCheckResult(
                             id = "server_probe",
-                            title = "Endpoint ${activeProfile.host}:${activeProfile.port}",
+                            title = "Salida del túnel (${activeProfile.host}:${activeProfile.port})",
                             status = DiagnosticStatus.PASSED,
-                            summary = "Handshake TCP/TLS exitoso (${activeProfile.protocol.badgeCode})",
-                            latencyMs = latency,
+                            summary = "Flujo TCP activo por túnel · IP de salida: $exitIp",
+                            latencyMs = dt,
                             timestampMillis = System.currentTimeMillis()
                         )
                     } else {
-                        DiagnosticCheckResult(
-                            id = "server_probe",
-                            title = "Endpoint ${activeProfile.host}:${activeProfile.port}",
-                            status = DiagnosticStatus.FAILED,
-                            summary = "Timeout o certificado TLS rechazado (${dt} ms)",
-                            timestampMillis = System.currentTimeMillis()
+                        val fallbackTcp = dnsMgr.resolveViaTunnelTcp(
+                            queryBytes = dnsMgr.buildSampleDnsQuery("example.com"),
+                            dnsIp = dnsConfig.primaryDns,
+                            engine = engine
                         )
+                        val dt2 = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                        if (fallbackTcp != null) {
+                            DiagnosticCheckResult(
+                                id = "server_probe",
+                                title = "Salida del túnel (${activeProfile.host}:${activeProfile.port})",
+                                status = DiagnosticStatus.PASSED,
+                                summary = "Túnel TCP operativo (api.ipify.org no respondió, DNS TCP OK)",
+                                latencyMs = dt2,
+                                timestampMillis = System.currentTimeMillis()
+                            )
+                        } else {
+                            DiagnosticCheckResult(
+                                id = "server_probe",
+                                title = "Salida del túnel (${activeProfile.host}:${activeProfile.port})",
+                                status = DiagnosticStatus.FAILED,
+                                summary = "El túnel conectado no devolvió tráfico de salida (${dt2} ms)",
+                                timestampMillis = System.currentTimeMillis()
+                            )
+                        }
+                    }
+                } else {
+                    val t0 = System.currentTimeMillis()
+                    val useTls = activeProfile.protocol == TunnelProtocol.HTTPS_PROXY || activeProfile.tlsEnabled
+                    if (activeProfile.protocol == TunnelProtocol.HTTP_PROXY || activeProfile.protocol == TunnelProtocol.HTTPS_PROXY) {
+                        val secrets = profileRepo.getSecrets(activeProfile.id)
+                        val probe = runCatching {
+                            HttpConnectProxyEngine.probeHttpEndpoint(activeProfile, secrets, timeoutMs = 3_500)
+                        }
+                        val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                        probe.fold(
+                            onSuccess = { (latency, statusLine) ->
+                                profileRepo.updateLatency(activeProfile.id, latency)
+                                val modeTag = if (useTls) "TLS + HTTP" else "TCP + HTTP (sin TLS)"
+                                DiagnosticCheckResult(
+                                    id = "server_probe",
+                                    title = "Endpoint ${activeProfile.host}:${activeProfile.port}",
+                                    status = DiagnosticStatus.PASSED,
+                                    summary = "$modeTag (${activeProfile.httpRequestMethod}) -> $statusLine",
+                                    latencyMs = latency,
+                                    timestampMillis = System.currentTimeMillis()
+                                )
+                            },
+                            onFailure = { err ->
+                                DiagnosticCheckResult(
+                                    id = "server_probe",
+                                    title = "Endpoint ${activeProfile.host}:${activeProfile.port}",
+                                    status = DiagnosticStatus.FAILED,
+                                    summary = "${err.message ?: "Error de conexión"} (${dt} ms)",
+                                    timestampMillis = System.currentTimeMillis()
+                                )
+                            }
+                        )
+                    } else {
+                        val latency = probeTcpHandshakeMs(activeProfile)
+                        val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                        if (latency != null) {
+                            profileRepo.updateLatency(activeProfile.id, latency)
+                            val modeTag = if (useTls) "TCP + TLS" else "TCP directo"
+                            DiagnosticCheckResult(
+                                id = "server_probe",
+                                title = "Endpoint ${activeProfile.host}:${activeProfile.port}",
+                                status = DiagnosticStatus.PASSED,
+                                summary = "Handshake $modeTag exitoso (${activeProfile.protocol.badgeCode})",
+                                latencyMs = latency,
+                                timestampMillis = System.currentTimeMillis()
+                            )
+                        } else {
+                            DiagnosticCheckResult(
+                                id = "server_probe",
+                                title = "Endpoint ${activeProfile.host}:${activeProfile.port}",
+                                status = DiagnosticStatus.FAILED,
+                                summary = if (useTls) {
+                                    "Timeout o certificado TLS rechazado (${dt} ms)"
+                                } else {
+                                    "Sin respuesta TCP en ${activeProfile.host}:${activeProfile.port} (${dt} ms)"
+                                },
+                                timestampMillis = System.currentTimeMillis()
+                            )
+                        }
                     }
                 }
             }
@@ -436,10 +575,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         AppLogger.clear()
     }
 
-    private fun defaultDiagnosticChecks(): List<DiagnosticCheckResult> = listOf(
-        DiagnosticCheckResult("dns_udp", "Resolución DNS UDP"),
-        DiagnosticCheckResult("doh", "DNS-over-HTTPS (RFC 8484)"),
-        DiagnosticCheckResult("server_probe", "Conectividad del servidor"),
+    private fun defaultDiagnosticChecks(connected: Boolean = false): List<DiagnosticCheckResult> = listOf(
+        DiagnosticCheckResult(
+            "dns_udp",
+            if (connected) "Resolución DNS por túnel (TCP)" else "Resolución DNS directa"
+        ),
+        DiagnosticCheckResult(
+            "doh",
+            if (connected) "DNS-over-HTTPS por túnel (RFC 8484)" else "DNS-over-HTTPS directo (RFC 8484)"
+        ),
+        DiagnosticCheckResult(
+            "server_probe",
+            if (connected) "Salida del túnel activo" else "Conectividad del servidor"
+        ),
         DiagnosticCheckResult("keystore", "Android Keystore AES-256-GCM")
     )
 }

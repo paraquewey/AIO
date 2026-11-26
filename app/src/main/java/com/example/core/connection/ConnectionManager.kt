@@ -7,7 +7,9 @@ import android.os.Build
 import com.example.core.logger.AppLogger
 import com.example.domain.models.ConnectionState
 import com.example.domain.models.SshHostKeyChallenge
+import com.example.engines.adapter.TunnelEngine
 import com.example.vpn.service.AioVpnService
+import com.example.vpn.tun.DnsManager
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,7 +23,25 @@ class ConnectionManager(private val appContext: Context) {
     private val _pendingHostKeyChallenge = MutableStateFlow<SshHostKeyChallenge?>(null)
     val pendingHostKeyChallenge: StateFlow<SshHostKeyChallenge?> = _pendingHostKeyChallenge.asStateFlow()
 
+    @Volatile
+    var activeEngine: TunnelEngine? = null
+        private set
+
+    @Volatile
+    var activeDnsConfig: DnsManager.ResolvedDnsConfig? = null
+        private set
+
     private var hostKeyDecisionDeferred: CompletableDeferred<Boolean>? = null
+
+    fun setActiveTunnel(engine: TunnelEngine?, dnsConfig: DnsManager.ResolvedDnsConfig?) {
+        activeEngine = engine
+        activeDnsConfig = dnsConfig
+    }
+
+    fun clearActiveTunnel() {
+        activeEngine = null
+        activeDnsConfig = null
+    }
 
     fun setState(state: ConnectionState) {
         _connectionState.value = state

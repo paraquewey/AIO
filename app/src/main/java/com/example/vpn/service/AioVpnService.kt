@@ -90,6 +90,7 @@ class AioVpnService : VpnService() {
             return
         }
         val secrets = app.profileRepository.getSecrets(profile.id)
+        val appSettings = app.settingsRepository.settings.first()
 
         activeProfileId = profile.id
         connMgr.setState(ConnectionState.Preparing(profile.name))
@@ -100,6 +101,7 @@ class AioVpnService : VpnService() {
             protectSocket = { sock -> protect(sock) },
             protectDatagramSocket = { ds -> protect(ds) }
         )
+        val dnsConfig = DnsManager.resolveActiveDnsConfig(profile, appSettings)
 
         val engineContext = EngineContext(
             protectSocket = { sock -> protect(sock) },
@@ -119,16 +121,18 @@ class AioVpnService : VpnService() {
             val errMsg = startResult.exceptionOrNull()?.message ?: "No se pudo iniciar el motor de túnel."
             AppLogger.error(TAG, "Conexión fallida para ${profile.name}: $errMsg")
             engine.release()
+            connMgr.clearActiveTunnel()
             connMgr.reportError(errMsg)
             stopForegroundAndSelf()
             return
         }
 
         // Establish Android TUN interface AFTER engine authentication succeeds
-        val tunFd = establishTunInterface(profile)
+        val tunFd = establishTunInterface(profile, dnsConfig)
         if (tunFd == null) {
             engine.stop()
             engine.release()
+            connMgr.clearActiveTunnel()
             connMgr.reportError("Android rechazó la creación de la interfaz TUN (verifica permisos VPN).")
             stopForegroundAndSelf()
             return
@@ -142,12 +146,14 @@ class AioVpnService : VpnService() {
         val router = TunPacketRouter(
             tunFd = tunFd,
             profile = profile,
+            dnsConfig = dnsConfig,
             engine = engine,
             dnsManager = dnsManager,
             statisticsManager = statsMgr
         )
         packetRouter = router
         router.start()
+        connMgr.setActiveTunnel(engine, dnsConfig)
 
         startNetworkMonitor(profile.id)
 
@@ -160,6 +166,10 @@ class AioVpnService : VpnService() {
                 exitIp = null,
                 latencyMs = profile.lastLatencyMs
             )
+        )
+        AppLogger.info(
+            TAG,
+            "Túnel activo (DNS1=${dnsConfig.primaryDns}, DNS2=${dnsConfig.secondaryDns}, modo=${dnsConfig.dnsMode.name})"
         )
         updateNotification("Conectado · ${profile.name} (${profile.protocol.badgeCode})")
         startNotificationTicker(profile.name)
@@ -179,13 +189,24 @@ class AioVpnService : VpnService() {
         }
     }
 
-    private fun establishTunInterface(profile: TunnelProfile): ParcelFileDescriptor? {
+    private fun establishTunInterface(
+        profile: TunnelProfile,
+        dnsConfig: DnsManager.ResolvedDnsConfig
+    ): ParcelFileDescriptor? {
         return runCatching {
             val builder = Builder()
                 .setSession("AIO Tunnel - ${profile.name}")
                 .setMtu(profile.mtu.coerceIn(1280, 9000))
                 .addAddress("10.89.0.2", 30)
-                .addDnsServer(profile.dnsServer.ifBlank { "1.1.1.1" })
+                .addDnsServer(dnsConfig.primaryDns)
+                .apply {
+                    if (dnsConfig.secondaryDns.isNotBlank() &&
+                        dnsConfig.secondaryDns != dnsConfig.primaryDns &&
+                        DnsManager.isValidIpv4(dnsConfig.secondaryDns)
+                    ) {
+                        addDnsServer(dnsConfig.secondaryDns)
+                    }
+                }
                 .addRoute("0.0.0.0", 0)
 
             if (profile.enableIpv6) {
@@ -271,6 +292,7 @@ class AioVpnService : VpnService() {
             activeEngine?.release()
         }
         activeEngine = null
+        app.connectionManager.clearActiveTunnel()
         app.statisticsManager.stopSession()
         if (userRequested) {
             app.connectionManager.setState(ConnectionState.Disconnected)
@@ -292,6 +314,7 @@ class AioVpnService : VpnService() {
         packetRouter?.stop()
         runCatching { tunInterface?.close() }
         runCatching { activeEngine?.release() }
+        (application as? AioTunnelApplication)?.connectionManager?.clearActiveTunnel()
         serviceScope.cancel()
         super.onDestroy()
     }

@@ -11,6 +11,7 @@ data class AppSettings(
     val failoverToNextServer: Boolean = false,
     val defaultDnsMode: DnsMode = DnsMode.DNS_OVER_HTTPS,
     val defaultDnsServer: String = "1.1.1.1",
+    val defaultDnsServerSecondary: String = "1.0.0.1",
     val defaultDohUrl: String = "https://cloudflare-dns.com/dns-query",
     val ipv6Enabled: Boolean = false,
     val bypassLan: Boolean = true,

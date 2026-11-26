@@ -4,11 +4,11 @@ Cliente VPN Android multiprotocolo nativo desarrollado con Kotlin, Jetpack Compo
 
 ## Capacidades actuales (Motores integrados reales)
 
-- **HTTP Proxy (HTTP CONNECT)** con encabezados personalizados permitidos y autenticación Basic.
-- **HTTPS Proxy (TLS + HTTP CONNECT)** con validación estricta de certificados X.509, vigencia y nombre de dominio.
+- **HTTP Proxy (`CONNECT`, `GET`, `HEAD`, `POST`, `PUT` y `Upgrade: websocket`)** con encabezados personalizados permitidos y autenticación Basic.
+- **HTTPS Proxy (TLS + HTTP CONNECT/WS)** con validación estricta de certificados X.509, vigencia y nombre de dominio.
 - **SOCKS5 (RFC 1928 / RFC 1929)** con soporte TCP CONNECT y UDP ASSOCIATE.
 - **SSH Tunnel (JSch)** con contraseña, clave privada OpenSSH/PEM, **SSH Jump Host** multi-salto y verificación interactiva de huellas SHA-256 (`SshHostKeyStore`).
-- **DNS convencional UDP y DNS-over-HTTPS (RFC 8484)** sobre sockets protegidos (`VpnService.protect()`).
+- **DNS primario y secundario dinámico (DNS-over-TCP RFC 1035 y DNS-over-HTTPS RFC 8484)** enrutados estrictamente por dentro del túnel activo con respaldo automático DNS 1 → DNS 2.
 - **Split Tunneling por aplicación**, soporte IPv4/IPv6 opcional, reconexión ante cambios de red y protección contra bucles recursivos.
 - **Gestor de perfiles**: JSON AIO v1, URIs (`ssh://`, `socks5://`, `http://`, `https://`, `vless://`, `vmess://`, `trojan://`, `ss://`), subconjuntos sing-box y Clash YAML. Las contraseñas y claves no se exportan por defecto.
 

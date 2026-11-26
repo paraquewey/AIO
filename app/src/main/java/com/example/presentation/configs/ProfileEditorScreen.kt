@@ -59,6 +59,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.example.domain.models.AppSettings
 import com.example.domain.models.DnsMode
 import com.example.domain.models.ProfileSecrets
 import com.example.domain.models.SplitTunnelMode
@@ -68,6 +69,7 @@ import com.example.domain.models.TunnelProfile
 import com.example.domain.models.TunnelProtocol
 import com.example.presentation.components.GlassCard
 import com.example.presentation.state.InstalledAppInfo
+import com.example.vpn.tun.DnsManager
 import com.example.ui.theme.GruvboxAqua
 import com.example.ui.theme.GruvboxGreen
 import com.example.ui.theme.GruvboxOrange
@@ -81,6 +83,7 @@ import java.util.UUID
 fun ProfileEditorScreen(
     existingProfile: TunnelProfile?,
     existingSecrets: ProfileSecrets,
+    appSettings: AppSettings = AppSettings(),
     installedApps: List<InstalledAppInfo>,
     onLoadInstalledApps: () -> Unit,
     onSave: (TunnelProfile, ProfileSecrets) -> Unit,
@@ -113,18 +116,45 @@ fun ProfileEditorScreen(
     var jumpKeyPem by remember { mutableStateOf(existingSecrets.jumpPrivateKeyPem) }
 
     var transport by remember { mutableStateOf(existingProfile?.transport ?: TransportType.TCP) }
-    var tlsEnabled by remember { mutableStateOf(existingProfile?.tlsEnabled ?: true) }
+    var tlsEnabled by remember {
+        mutableStateOf(existingProfile?.tlsEnabled ?: (protocol == TunnelProtocol.HTTPS_PROXY))
+    }
     var tlsSni by remember { mutableStateOf(existingProfile?.tlsServerName ?: "") }
     var verifyTls by remember { mutableStateOf(existingProfile?.verifyTlsCertificate ?: true) }
+    var httpMethod by remember { mutableStateOf(existingProfile?.httpRequestMethod ?: "CONNECT") }
+    var httpPath by remember { mutableStateOf(existingProfile?.httpRequestPath ?: "/") }
+    var upgradeWebSocket by remember { mutableStateOf(existingProfile?.upgradeWebSocket ?: false) }
     var customHeadersRaw by remember {
         mutableStateOf(
             existingProfile?.customConnectHeaders?.entries?.joinToString("\n") { "${it.key}: ${it.value}" } ?: ""
         )
     }
 
-    var dnsMode by remember { mutableStateOf(existingProfile?.dnsMode ?: DnsMode.DNS_OVER_HTTPS) }
-    var dnsServer by remember { mutableStateOf(existingProfile?.dnsServer ?: "1.1.1.1") }
-    var dohUrl by remember { mutableStateOf(existingProfile?.dohUrl ?: "https://cloudflare-dns.com/dns-query") }
+    var dnsMode by remember { mutableStateOf(existingProfile?.dnsMode ?: appSettings.defaultDnsMode) }
+    var dnsServer by remember {
+        mutableStateOf(
+            existingProfile?.let {
+                if (it.useCustomDns || it.dnsServer != DnsManager.DEFAULT_PRIMARY_DNS) it.dnsServer
+                else appSettings.defaultDnsServer
+            } ?: appSettings.defaultDnsServer
+        )
+    }
+    var dnsServerSecondary by remember {
+        mutableStateOf(
+            existingProfile?.let {
+                if (it.useCustomDns || it.dnsServerSecondary != DnsManager.DEFAULT_SECONDARY_DNS) it.dnsServerSecondary
+                else appSettings.defaultDnsServerSecondary
+            } ?: appSettings.defaultDnsServerSecondary
+        )
+    }
+    var dohUrl by remember {
+        mutableStateOf(
+            existingProfile?.let {
+                if (it.useCustomDns || it.dohUrl != DnsManager.DEFAULT_DOH_URL) it.dohUrl
+                else appSettings.defaultDohUrl
+            } ?: appSettings.defaultDohUrl
+        )
+    }
     var enableIpv6 by remember { mutableStateOf(existingProfile?.enableIpv6 ?: false) }
     var bypassLan by remember { mutableStateOf(existingProfile?.bypassLan ?: true) }
     var mtuStr by remember { mutableStateOf((existingProfile?.mtu ?: 1500).toString()) }
@@ -176,6 +206,21 @@ fun ProfileEditorScreen(
                                 }
                                 .toMap()
                             val tags = tagsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+                            val cleanDns1 = dnsServer.trim().ifBlank { appSettings.defaultDnsServer.ifBlank { "1.1.1.1" } }
+                            val cleanDns2 = dnsServerSecondary.trim().ifBlank { appSettings.defaultDnsServerSecondary.ifBlank { "1.0.0.1" } }
+                            if (!DnsManager.isValidIpv4(cleanDns1)) {
+                                validationError = "Servidor DNS 1 inválido (debe ser una IPv4 válida)."
+                                return@Button
+                            }
+                            if (!DnsManager.isValidIpv4(cleanDns2)) {
+                                validationError = "Servidor DNS 2 inválido (debe ser una IPv4 válida)."
+                                return@Button
+                            }
+                            val cleanDoh = dohUrl.trim().ifBlank { appSettings.defaultDohUrl.ifBlank { "https://cloudflare-dns.com/dns-query" } }
+                            val isCustomDns = (existingProfile?.useCustomDns == true) ||
+                                cleanDns1 != appSettings.defaultDnsServer ||
+                                cleanDns2 != appSettings.defaultDnsServerSecondary ||
+                                cleanDoh != appSettings.defaultDohUrl
                             val profile = TunnelProfile(
                                 id = existingProfile?.id ?: UUID.randomUUID().toString(),
                                 name = name.trim(),
@@ -189,14 +234,19 @@ fun ProfileEditorScreen(
                                 jumpPort = parsedJumpPort,
                                 jumpUsername = jumpUser.trim(),
                                 jumpAuthMethod = jumpAuthMethod,
-                                transport = transport,
+                                transport = if (upgradeWebSocket) TransportType.WEBSOCKET else transport,
                                 tlsEnabled = tlsEnabled || protocol == TunnelProtocol.HTTPS_PROXY,
                                 tlsServerName = tlsSni.trim(),
                                 verifyTlsCertificate = verifyTls,
+                                httpRequestMethod = httpMethod.trim().uppercase().ifBlank { "CONNECT" },
+                                httpRequestPath = httpPath.trim().ifBlank { "/" },
+                                upgradeWebSocket = upgradeWebSocket,
                                 customConnectHeaders = headersMap,
                                 dnsMode = dnsMode,
-                                dnsServer = dnsServer.trim().ifBlank { "1.1.1.1" },
-                                dohUrl = dohUrl.trim().ifBlank { "https://cloudflare-dns.com/dns-query" },
+                                useCustomDns = isCustomDns,
+                                dnsServer = cleanDns1,
+                                dnsServerSecondary = cleanDns2,
+                                dohUrl = cleanDoh,
                                 enableIpv6 = enableIpv6,
                                 bypassLan = bypassLan,
                                 mtu = parsedMtu,
@@ -533,11 +583,44 @@ fun ProfileEditorScreen(
                         }
                     }
                     if (protocol == TunnelProtocol.HTTP_PROXY || protocol == TunnelProtocol.HTTPS_PROXY) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("Método de payload HTTP", style = MaterialTheme.typography.labelLarge)
+                        Spacer(Modifier.height(4.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf("CONNECT", "GET", "HEAD", "POST", "PUT").forEach { m ->
+                                FilterChip(
+                                    selected = httpMethod.equals(m, ignoreCase = true),
+                                    onClick = { httpMethod = m },
+                                    label = { Text(m) }
+                                )
+                            }
+                        }
+                        if (!httpMethod.equals("CONNECT", ignoreCase = true)) {
+                            Spacer(Modifier.height(6.dp))
+                            OutlinedTextField(
+                                value = httpPath,
+                                onValueChange = { httpPath = it },
+                                label = { Text("Ruta HTTP del payload (ej. / o /ws)") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Encabezados Upgrade: websocket")
+                            Switch(checked = upgradeWebSocket, onCheckedChange = { upgradeWebSocket = it })
+                        }
                         Spacer(Modifier.height(6.dp))
                         OutlinedTextField(
                             value = customHeadersRaw,
                             onValueChange = { customHeadersRaw = it },
-                            label = { Text("Encabezados CONNECT permitidos (ej. User-Agent: ...)") },
+                            label = { Text("Encabezados HTTP personalizados (ej. Host: ..., User-Agent: ...)") },
                             minLines = 2,
                             maxLines = 4,
                             modifier = Modifier.fillMaxWidth()
@@ -558,7 +641,7 @@ fun ProfileEditorScreen(
                                     Text(
                                         when (mode) {
                                             DnsMode.DNS_OVER_HTTPS -> "DoH"
-                                            DnsMode.PLAIN_DNS -> "DNS UDP"
+                                            DnsMode.PLAIN_DNS -> "DNS TCP"
                                             DnsMode.SYSTEM_DEFAULT -> "Sistema"
                                         }
                                     )
@@ -575,15 +658,27 @@ fun ProfileEditorScreen(
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )
-                    } else {
-                        OutlinedTextField(
-                            value = dnsServer,
-                            onValueChange = { dnsServer = it },
-                            label = { Text("Servidor DNS IPv4") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        Spacer(Modifier.height(8.dp))
                     }
+                    OutlinedTextField(
+                        value = dnsServer,
+                        onValueChange = { dnsServer = it },
+                        label = { Text("Servidor DNS 1 (Primario)") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("editor_dns1_input")
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = dnsServerSecondary,
+                        onValueChange = { dnsServerSecondary = it },
+                        label = { Text("Servidor DNS 2 (Secundario)") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("editor_dns2_input")
+                    )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = mtuStr,
