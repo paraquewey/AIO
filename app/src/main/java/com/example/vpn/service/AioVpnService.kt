@@ -315,44 +315,101 @@ class AioVpnService : VpnService() {
         bypassLan: Boolean
     ): ParcelFileDescriptor? {
         return runCatching {
+            val tunLocalIp = VpnRouteHelper.sanitizeIpv4Address(DEFAULT_TUN_IPV4) ?: DEFAULT_TUN_IPV4
+            val primaryDnsIp = VpnRouteHelper.sanitizeIpv4Address(dnsConfig.primaryDns)
+                ?: DnsManager.DEFAULT_PRIMARY_DNS
+            val secondaryDnsIp = VpnRouteHelper.sanitizeIpv4Address(dnsConfig.secondaryDns)
+                ?.takeIf { it != primaryDnsIp }
+
+            if (primaryDnsIp != dnsConfig.primaryDns.trim()) {
+                AppLogger.warn(
+                    TAG,
+                    "DNS primario '${dnsConfig.primaryDns}' sanitizado a '$primaryDnsIp' antes de Builder.addDnsServer()."
+                )
+            }
+
             val builder = Builder()
                 .setSession("AIO Tunnel - ${profile.name}")
                 .setMtu(profile.mtu.coerceIn(1280, 9000))
-                .addAddress("10.89.0.2", 30)
-                .addDnsServer(dnsConfig.primaryDns)
+                .addAddress(tunLocalIp, DEFAULT_TUN_PREFIX)
+                .addDnsServer(primaryDnsIp)
                 .apply {
-                    if (dnsConfig.secondaryDns.isNotBlank() &&
-                        dnsConfig.secondaryDns != dnsConfig.primaryDns &&
-                        DnsManager.isValidIpv4(dnsConfig.secondaryDns)
-                    ) {
-                        addDnsServer(dnsConfig.secondaryDns)
+                    if (secondaryDnsIp != null) {
+                        addDnsServer(secondaryDnsIp)
                     }
                 }
 
             if (bypassLan) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     builder.addRoute("0.0.0.0", 0)
-                    VpnRouteHelper.EXCLUDED_LAN_CGNAT_CIDRS.forEach { cidr ->
-                        builder.excludeRoute(IpPrefix(InetAddress.getByName(cidr.address), cidr.prefixLength))
-                    }
-                    AppLogger.info(TAG, "Bypass LAN/CGNAT activo (Android 13+ excludeRoute)")
-                } else {
-                    val allowedPublicRoutes = VpnRouteHelper.computeAllowedPublicIpv4Routes()
-                    allowedPublicRoutes.forEach { cidr ->
-                        builder.addRoute(cidr.address, cidr.prefixLength)
+                    var excludedCount = 0
+                    VpnRouteHelper.EXCLUDED_LAN_CGNAT_CIDRS.forEach { rawCidr ->
+                        val cidr = rawCidr.normalized()
+                        if (!VpnRouteHelper.canPassToVpnBuilder(cidr, isExcludeRoute = true)) {
+                            AppLogger.info(
+                                TAG,
+                                "Omitiendo $cidr en excludeRoute() (manejado nativamente por el sistema)."
+                            )
+                            return@forEach
+                        }
+                        val added = runCatching {
+                            val mask = VpnRouteHelper.maskForPrefix(cidr.prefixLength)
+                            val maskedIp = VpnRouteHelper.longToIpv4(cidr.addressLong and mask)
+                            builder.excludeRoute(IpPrefix(InetAddress.getByName(maskedIp), cidr.prefixLength))
+                        }.onFailure { err ->
+                            AppLogger.warn(
+                                TAG,
+                                "excludeRoute($cidr) rechazado por el sistema: ${err.message}"
+                            )
+                        }.isSuccess
+                        if (added) excludedCount++
                     }
                     AppLogger.info(
                         TAG,
-                        "Bypass LAN/CGNAT activo (${allowedPublicRoutes.size} rutas públicas CIDR sin LAN/CGNAT)"
+                        "Bypass LAN/CGNAT activo (Android 13+, $excludedCount prefijos excluidos)"
                     )
+                } else {
+                    val allowedPublicRoutes = VpnRouteHelper.computeAllowedPublicIpv4Routes()
+                    var addedCount = 0
+                    allowedPublicRoutes.forEach { rawCidr ->
+                        val cidr = rawCidr.normalized()
+                        if (!VpnRouteHelper.canPassToVpnBuilder(cidr, isExcludeRoute = false)) {
+                            AppLogger.warn(TAG, "Omitiendo ruta CIDR inválida en addRoute(): $cidr")
+                            return@forEach
+                        }
+                        val added = runCatching {
+                            val mask = VpnRouteHelper.maskForPrefix(cidr.prefixLength)
+                            val maskedIp = VpnRouteHelper.longToIpv4(cidr.addressLong and mask)
+                            builder.addRoute(maskedIp, cidr.prefixLength)
+                        }.onFailure { err ->
+                            AppLogger.warn(
+                                TAG,
+                                "addRoute($cidr) rechazado por el sistema: ${err.message}"
+                            )
+                        }.isSuccess
+                        if (added) addedCount++
+                    }
+                    if (addedCount == 0) {
+                        AppLogger.warn(TAG, "Ninguna ruta CIDR parcial aceptada; usando fallback 0.0.0.0/0")
+                        builder.addRoute("0.0.0.0", 0)
+                    } else {
+                        AppLogger.info(
+                            TAG,
+                            "Bypass LAN/CGNAT activo ($addedCount rutas públicas CIDR sin LAN/CGNAT)"
+                        )
+                    }
                 }
             } else {
                 builder.addRoute("0.0.0.0", 0)
             }
 
             if (profile.enableIpv6) {
-                builder.addAddress("fd89:1122:3344::2", 126)
-                builder.addRoute("::", 0)
+                runCatching {
+                    builder.addAddress("fd89:1122:3344::2", 126)
+                    builder.addRoute("::", 0)
+                }.onFailure { err ->
+                    AppLogger.warn(TAG, "No se pudo añadir ruta IPv6 al TUN: ${err.message}")
+                }
             }
 
             // Recursive loop protection: NEVER route AIO Tunnel VPN's own sockets back into TUN!
@@ -379,7 +436,7 @@ class AioVpnService : VpnService() {
 
             builder.establish()
         }.onFailure { err ->
-            AppLogger.error(TAG, "Error en VpnService.Builder.establish()", err)
+            AppLogger.error(TAG, "Error en VpnService.Builder.establish() (${err.message})", err)
         }.getOrNull()
     }
 
@@ -566,6 +623,8 @@ class AioVpnService : VpnService() {
 
     companion object {
         private const val TAG = "AioVpnService"
+        private const val DEFAULT_TUN_IPV4 = "10.89.0.2"
+        private const val DEFAULT_TUN_PREFIX = 30
         const val CHANNEL_ID = "aio_vpn_status_channel"
         const val NOTIFICATION_ID = 4107
         const val ACTION_CONNECT = "com.example.vpn.ACTION_CONNECT"

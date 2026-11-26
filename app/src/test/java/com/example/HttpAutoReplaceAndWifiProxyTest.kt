@@ -291,24 +291,65 @@ class HttpAutoReplaceAndWifiProxyTest {
     }
 
     @Test
-    fun `vpn route helper excludes LAN and CGNAT 100_64_0_0_10 cleanly from inverse CIDR routes`() {
+    fun `vpn route helper excludes LAN, CGNAT, loopback, multicast, and masks all CIDR host bits`() {
         val allowed = VpnRouteHelper.computeAllowedPublicIpv4Routes()
         assertTrue(allowed.isNotEmpty())
+
+        // Every emitted CIDR MUST have 0 host bits and pass VpnService.Builder checks
+        allowed.forEach { cidr ->
+            val mask = VpnRouteHelper.maskForPrefix(cidr.prefixLength)
+            assertEquals(
+                "Host bits must be zero for $cidr",
+                cidr.addressLong and mask,
+                cidr.addressLong
+            )
+            assertTrue(
+                "Emitted route $cidr must pass VpnService.Builder validation",
+                VpnRouteHelper.canPassToVpnBuilder(cidr, isExcludeRoute = false)
+            )
+        }
+
+        // Loopback 127.0.0.0/8 must be rejected from VpnService.Builder calls (Android throws Bad address)
+        assertFalse(
+            VpnRouteHelper.canPassToVpnBuilder(
+                VpnRouteHelper.cidr("127.0.0.0", 8),
+                isExcludeRoute = true
+            )
+        )
+        assertTrue(
+            VpnRouteHelper.canPassToVpnBuilder(
+                VpnRouteHelper.cidr("100.64.0.0", 10),
+                isExcludeRoute = true
+            )
+        )
+
+        // Masking unmasked host IPs into canonical network CIDRs
+        assertEquals("192.168.1.0/24", VpnRouteHelper.cidr("192.168.1.55", 24).toString())
+        assertEquals("100.64.0.0/10", VpnRouteHelper.cidr("100.85.227.228", 10).toString())
+        assertEquals("0.0.0.0/0", VpnRouteHelper.cidr("192.168.1.55", 0).toString())
+
+        // IPv4 sanitization strips whitespace & :port and rejects invalid/loopback/multicast DNS targets
+        assertEquals("94.140.14.15", VpnRouteHelper.sanitizeIpv4Address("  94.140.14.15:53 "))
+        assertEquals("1.1.1.1", VpnRouteHelper.sanitizeIpv4Address("[1.1.1.1]"))
+        assertEquals(null, VpnRouteHelper.sanitizeIpv4Address("127.0.0.1"))
+        assertEquals(null, VpnRouteHelper.sanitizeIpv4Address("224.0.0.1"))
+        assertEquals(null, VpnRouteHelper.sanitizeIpv4Address("999.1.1.1"))
 
         fun isRoutedToVpn(ip: String): Boolean {
             val ipLong = VpnRouteHelper.ipv4ToLongOrNull(ip)!!
             return allowed.any { it.contains(ipLong) }
         }
 
-        // Local, Tethering, and CGNAT IPs MUST be excluded
+        // Local, Tethering, CGNAT, Unspecified, Multicast, and Reserved IPs MUST be excluded
         listOf(
-            "10.0.0.1", "10.255.255.254",
+            "0.0.0.1", "10.0.0.1", "10.255.255.254",
             "100.64.0.1", "100.85.227.228", "100.127.255.254",
             "127.0.0.1", "169.254.10.20",
             "172.16.0.1", "172.31.255.254",
-            "192.168.0.1", "192.168.43.1"
+            "192.168.0.1", "192.168.43.1",
+            "224.0.0.251", "239.255.255.250", "255.255.255.255"
         ).forEach { localIp ->
-            assertFalse("Local/CGNAT IP $localIp should NOT enter TUN", isRoutedToVpn(localIp))
+            assertFalse("Local/CGNAT/Reserved IP $localIp should NOT enter TUN", isRoutedToVpn(localIp))
             assertTrue("isLocalOrCgnatHost($localIp) must be true", VpnRouteHelper.isLocalOrCgnatHost(localIp))
         }
 
@@ -317,7 +358,8 @@ class HttpAutoReplaceAndWifiProxyTest {
             "1.1.1.1", "8.8.8.8", "9.255.255.255", "11.0.0.1",
             "100.63.255.255", "100.128.0.1",
             "172.15.255.255", "172.32.0.1",
-            "192.167.255.255", "192.169.0.1"
+            "192.167.255.255", "192.169.0.1",
+            "223.255.255.254"
         ).forEach { publicIp ->
             assertTrue("Public IP $publicIp MUST enter TUN", isRoutedToVpn(publicIp))
             assertFalse("isLocalOrCgnatHost($publicIp) must be false", VpnRouteHelper.isLocalOrCgnatHost(publicIp))
@@ -325,7 +367,7 @@ class HttpAutoReplaceAndWifiProxyTest {
 
         // Verify exact non-overlapping mathematical complement of 2^32
         val totalAllowed = allowed.sumOf { 1L shl (32 - it.prefixLength) }
-        val totalExcluded = VpnRouteHelper.EXCLUDED_LAN_CGNAT_CIDRS.sumOf { 1L shl (32 - it.prefixLength) }
+        val totalExcluded = VpnRouteHelper.ANDROID_12_EXCLUDED_CIDRS.sumOf { 1L shl (32 - it.prefixLength) }
         assertEquals(1L shl 32, totalAllowed + totalExcluded)
     }
 
