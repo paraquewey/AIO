@@ -28,6 +28,8 @@ class StatisticsManager {
     private var prevRx: Long = 0L
     private var prevTx: Long = 0L
     private var prevPackets: Long = 0L
+    private var peakDlRate: Long = 0L
+    private var peakUlRate: Long = 0L
 
     private val _stats = MutableStateFlow(TunnelStatistics())
     val stats: StateFlow<TunnelStatistics> = _stats.asStateFlow()
@@ -59,6 +61,8 @@ class StatisticsManager {
         prevRx = 0L
         prevTx = 0L
         prevPackets = 0L
+        peakDlRate = 0L
+        peakUlRate = 0L
         sessionStartMillis = 0L
         _stats.value = TunnelStatistics()
     }
@@ -90,6 +94,10 @@ class StatisticsManager {
         val dlRate = if (finalZeroRates) 0L else (currentRx - prevRx).coerceAtLeast(0L)
         val ulRate = if (finalZeroRates) 0L else (currentTx - prevTx).coerceAtLeast(0L)
         val pktRate = if (finalZeroRates) 0L else (currentPackets - prevPackets).coerceAtLeast(0L)
+        if (!finalZeroRates) {
+            if (dlRate > peakDlRate) peakDlRate = dlRate
+            if (ulRate > peakUlRate) peakUlRate = ulRate
+        }
         prevRx = currentRx
         prevTx = currentTx
         prevPackets = currentPackets
@@ -102,6 +110,8 @@ class StatisticsManager {
             bytesSent = currentTx,
             downloadBytesPerSec = dlRate,
             uploadBytesPerSec = ulRate,
+            peakDownloadBytesPerSec = peakDlRate,
+            peakUploadBytesPerSec = peakUlRate,
             activeTcpConnections = activeConnections.get(),
             totalPacketsForwarded = currentPackets,
             packetsPerSec = pktRate,

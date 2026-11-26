@@ -1,5 +1,18 @@
 # Changelog — AIO Tunnel VPN
 
+## [1.4.0] - 2026-11-26
+### Auto-Replace HTTP 100–599, Picos de Velocidad, Geo-IP y Nuevos Ajustes
+- **Soporte Universal de Respuestas HTTP (100–599 Auto-Replace):**
+  - `RawTcpPayloadExecutor` ahora acepta cualquier respuesta válida `HTTP/1.0` o `HTTP/1.1` en rango `100..599` (`503`, `502`, `405`, `400`, `403`, `301/302`, etc.), drena únicamente las cabeceras hasta `\r\n\r\n` preservando intacto el banner `SSH-2.0-...`, soporta múltiples fragmentos `[split]` y registra `"HTTP/1.1 <CÓDIGO> recibido -> Auto-Replace a 200 OK"`.
+- **Pantalla Inicio (Picos de velocidad e IP de salida con bandera):**
+  - `StatisticsManager` y `DashboardScreen` ahora calculan y muestran el **Pico máximo alcanzado** en la sesión actual tanto para Descarga como para Subida, reiniciándose automáticamente en cada nueva conexión.
+  - `DnsManager` consulta de forma asíncrona a través del túnel (`ip-api.com` / `ipwho.is`) la IP pública de salida junto con bandera emoji por código de país, país y ciudad (ej. `🇦🇷 Argentina • Buenos Aires`).
+- **Nuevas opciones en Ajustes (`DataStore` + Servicios):**
+  - **Seguir intentando conectarse** (activado por defecto) en `ConnectionManager` con reintento automático cada 2.5 s ante fallos o caídas inesperadas.
+  - **Tiempo de espera (Timeout)** editable y validado de `1` a `999` segundos (por defecto `10` s), aplicado dinámicamente a `socket.connect` y `socket.soTimeout` en todos los motores.
+  - **Compartir VPN por Wi-Fi / Hotspot (`0.0.0.0:8080`)**: servidor local `WifiShareProxyServer` (HTTP `CONNECT` / forward y SOCKS5) enrutado por el túnel activo, con detección automática de IP local y botón de copiar.
+  - **Ejecución en segundo plano (Optimización de batería)**: indicador visual de estado (`PowerManager.isIgnoringBatteryOptimizations`) e intent directo de Android con fallback compatible por fabricante.
+
 ## [1.3.0] - 2026-11-26
 ### Enrutamiento SSH Real (`direct-tcpip`), SOCKS5 Local, BadVPN UDPGW y Pila TCP/IP en TUN
 - **Puente TCP/IP -> SSH (`TunPacketRouter` + `SshTunnelEngine`):**

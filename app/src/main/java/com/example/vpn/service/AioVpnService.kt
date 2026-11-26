@@ -19,7 +19,9 @@ import com.example.domain.models.ConnectionState
 import com.example.domain.models.SplitTunnelMode
 import com.example.domain.models.TunnelProfile
 import com.example.engines.adapter.EngineContext
+import com.example.engines.adapter.EngineStatus
 import com.example.engines.adapter.TunnelEngine
+import com.example.engines.proxy.WifiShareProxyServer
 import com.example.vpn.monitor.NetworkMonitor
 import com.example.vpn.tun.DnsManager
 import com.example.vpn.tun.TunPacketRouter
@@ -40,9 +42,13 @@ class AioVpnService : VpnService() {
     private var packetRouter: TunPacketRouter? = null
     private var activeEngine: TunnelEngine? = null
     private var networkMonitor: NetworkMonitor? = null
+    private var wifiShareProxy: WifiShareProxyServer? = null
+    private var wifiShareObserverJob: Job? = null
+    private var engineStatusWatcherJob: Job? = null
     private var notificationUpdaterJob: Job? = null
     private var activeProfileId: String? = null
     private var reconnectAttempt = 0
+    private var disconnectingFlag = false
 
     override fun onCreate() {
         super.onCreate()
@@ -53,8 +59,9 @@ class AioVpnService : VpnService() {
         when (intent?.action) {
             ACTION_DISCONNECT -> {
                 serviceScope.launch {
+                    (application as AioTunnelApplication).connectionManager.markUserStopped()
                     disconnectInternal(userRequested = true)
-                    stopSelf()
+                    stopForegroundAndSelf()
                 }
                 return START_NOT_STICKY
             }
@@ -82,6 +89,10 @@ class AioVpnService : VpnService() {
         val app = application as AioTunnelApplication
         val connMgr = app.connectionManager
         val statsMgr = app.statisticsManager
+        if (connMgr.userRequestedStop) {
+            stopForegroundAndSelf()
+            return
+        }
 
         val profile = app.profileRepository.getProfile(profileId)
         if (profile == null) {
@@ -91,8 +102,12 @@ class AioVpnService : VpnService() {
         }
         val secrets = app.profileRepository.getSecrets(profile.id)
         val appSettings = app.settingsRepository.settings.first()
+        val timeoutMs = appSettings.connectionTimeoutSeconds.coerceIn(1, 999) * 1_000
 
+        disconnectInternal(userRequested = false)
         activeProfileId = profile.id
+        disconnectingFlag = false
+
         connMgr.setState(ConnectionState.Preparing(profile.name))
         updateNotification("Preparando ${profile.name} (${profile.protocol.badgeCode})...")
 
@@ -109,7 +124,8 @@ class AioVpnService : VpnService() {
             statisticsManager = statsMgr,
             onSshHostKeyChallenge = { challenge ->
                 connMgr.requestSshHostKeyConfirmation(challenge)
-            }
+            },
+            connectionTimeoutMs = timeoutMs
         )
         engine.initialize(engineContext)
 
@@ -122,7 +138,7 @@ class AioVpnService : VpnService() {
             AppLogger.error(TAG, "Conexión fallida para ${profile.name}: $errMsg")
             engine.release()
             connMgr.clearActiveTunnel()
-            connMgr.reportError(errMsg)
+            connMgr.handleUnexpectedDisconnectOrFailure(profile.id, profile.name, errMsg)
             stopForegroundAndSelf()
             return
         }
@@ -133,7 +149,8 @@ class AioVpnService : VpnService() {
             engine.stop()
             engine.release()
             connMgr.clearActiveTunnel()
-            connMgr.reportError("Android rechazó la creación de la interfaz TUN (verifica permisos VPN).")
+            val errMsg = "Android rechazó la creación de la interfaz TUN (verifica permisos VPN)."
+            connMgr.handleUnexpectedDisconnectOrFailure(profile.id, profile.name, errMsg)
             stopForegroundAndSelf()
             return
         }
@@ -154,8 +171,11 @@ class AioVpnService : VpnService() {
         packetRouter = router
         router.start()
         connMgr.setActiveTunnel(engine, dnsConfig)
+        connMgr.resetRetryCounter()
 
         startNetworkMonitor(profile.id)
+        startWifiProxyObserver(engine, statsMgr, connMgr)
+        startEngineDropWatcher(engine, profile.id, profile.name, connMgr)
 
         connMgr.setState(
             ConnectionState.Connected(
@@ -169,21 +189,99 @@ class AioVpnService : VpnService() {
         )
         AppLogger.info(
             TAG,
-            "Túnel activo (DNS1=${dnsConfig.primaryDns}, DNS2=${dnsConfig.secondaryDns}, modo=${dnsConfig.dnsMode.name})"
+            "Túnel activo (DNS1=${dnsConfig.primaryDns}, DNS2=${dnsConfig.secondaryDns}, modo=${dnsConfig.dnsMode.name}, timeout=${appSettings.connectionTimeoutSeconds}s)"
         )
         updateNotification("Conectado · ${profile.name} (${profile.protocol.badgeCode})")
         startNotificationTicker(profile.name)
 
-        // Probe real exit IP & latency asynchronously without blocking tunnel
+        // Probe real exit IP + geolocation + latency asynchronously without blocking tunnel
         serviceScope.launch(Dispatchers.IO) {
             val t0 = System.currentTimeMillis()
-            val exitIp = dnsManager.fetchExitIpThroughTunnel(engine)
-            val measuredLatency = if (exitIp != null) System.currentTimeMillis() - t0 else profile.lastLatencyMs
+            val exitInfo = dnsManager.fetchExitIpInfoThroughTunnel(engine)
+            val measuredLatency = if (exitInfo != null) System.currentTimeMillis() - t0 else profile.lastLatencyMs
             val current = connMgr.connectionState.value
             if (current is ConnectionState.Connected && current.profileId == profile.id) {
-                connMgr.setState(current.copy(exitIp = exitIp, latencyMs = measuredLatency))
+                connMgr.setState(
+                    current.copy(
+                        exitIp = exitInfo?.ip,
+                        exitCountry = exitInfo?.country,
+                        exitCountryCode = exitInfo?.countryCode,
+                        exitCity = exitInfo?.city,
+                        latencyMs = measuredLatency
+                    )
+                )
                 if (measuredLatency != null) {
                     app.profileRepository.updateLatency(profile.id, measuredLatency)
+                }
+            }
+        }
+    }
+
+    private fun startWifiProxyObserver(
+        engine: TunnelEngine,
+        statsMgr: com.example.core.stats.StatisticsManager,
+        connMgr: com.example.core.connection.ConnectionManager
+    ) {
+        wifiShareObserverJob?.cancel()
+        val app = application as AioTunnelApplication
+        wifiShareObserverJob = serviceScope.launch(Dispatchers.IO) {
+            var currentPort: Int? = null
+            app.settingsRepository.settings.collect { settings ->
+                val desiredPort = if (settings.wifiProxyShareEnabled) {
+                    settings.wifiProxySharePort.coerceIn(1024, 65535)
+                } else null
+
+                if (desiredPort == null) {
+                    runCatching { wifiShareProxy?.close() }
+                    wifiShareProxy = null
+                    currentPort = null
+                    connMgr.setWifiProxyActivePort(null)
+                } else if (desiredPort != currentPort || wifiShareProxy == null) {
+                    runCatching { wifiShareProxy?.close() }
+                    wifiShareProxy = null
+                    val server = WifiShareProxyServer(
+                        listenPort = desiredPort,
+                        openTunnel = { host, port -> engine.openTcpTunnel(host, port) },
+                        statisticsManager = statsMgr
+                    )
+                    runCatching {
+                        val bound = server.start()
+                        wifiShareProxy = server
+                        currentPort = bound
+                        connMgr.setWifiProxyActivePort(bound)
+                    }.onFailure { err ->
+                        runCatching { server.close() }
+                        currentPort = null
+                        connMgr.setWifiProxyActivePort(null)
+                        AppLogger.error(TAG, "No se pudo iniciar Proxy Wi-Fi en 0.0.0.0:$desiredPort", err)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun startEngineDropWatcher(
+        engine: TunnelEngine,
+        profileId: String,
+        profileName: String,
+        connMgr: com.example.core.connection.ConnectionManager
+    ) {
+        engineStatusWatcherJob?.cancel()
+        engineStatusWatcherJob = serviceScope.launch {
+            engine.status.collect { st ->
+                if (!disconnectingFlag &&
+                    !connMgr.userRequestedStop &&
+                    activeEngine === engine &&
+                    (st == EngineStatus.ERROR || st == EngineStatus.IDLE)
+                ) {
+                    AppLogger.warn(TAG, "El motor del túnel se detuvo inesperadamente ($st).")
+                    disconnectInternal(userRequested = false)
+                    connMgr.handleUnexpectedDisconnectOrFailure(
+                        profileId = profileId,
+                        profileName = profileName,
+                        reason = "Conexión interrumpida"
+                    )
+                    stopForegroundAndSelf()
                 }
             }
         }
@@ -247,10 +345,11 @@ class AioVpnService : VpnService() {
         val monitor = NetworkMonitor(applicationContext) {
             serviceScope.launch {
                 val app = application as AioTunnelApplication
-                val autoReconnect = app.settingsRepository.settings.first().autoReconnectOnNetworkChange
-                if (!autoReconnect) return@launch
-                if (reconnectAttempt >= 3) {
-                    AppLogger.warn(TAG, "Límite de reconexión alcanzado.")
+                val settings = app.settingsRepository.settings.first()
+                if (!settings.autoReconnectOnNetworkChange && !settings.keepTryingToConnect) return@launch
+                if (app.connectionManager.userRequestedStop) return@launch
+                if (reconnectAttempt >= 5) {
+                    AppLogger.warn(TAG, "Límite de reconexión por cambio de red alcanzado.")
                     return@launch
                 }
                 reconnectAttempt++
@@ -268,6 +367,7 @@ class AioVpnService : VpnService() {
     }
 
     private suspend fun disconnectInternal(userRequested: Boolean) {
+        disconnectingFlag = true
         val app = application as AioTunnelApplication
         val currentState = app.connectionManager.connectionState.value
         val profileLabel = when (currentState) {
@@ -279,6 +379,12 @@ class AioVpnService : VpnService() {
         if (userRequested) {
             app.connectionManager.setState(ConnectionState.Disconnecting(profileLabel))
         }
+        engineStatusWatcherJob?.cancel()
+        engineStatusWatcherJob = null
+        wifiShareObserverJob?.cancel()
+        wifiShareObserverJob = null
+        runCatching { wifiShareProxy?.close() }
+        wifiShareProxy = null
         notificationUpdaterJob?.cancel()
         notificationUpdaterJob = null
         networkMonitor?.stop()
@@ -302,6 +408,7 @@ class AioVpnService : VpnService() {
     override fun onRevoke() {
         AppLogger.warn(TAG, "Permiso VPN revocado por el sistema operativo.")
         serviceScope.launch {
+            (application as AioTunnelApplication).connectionManager.markUserStopped()
             disconnectInternal(userRequested = true)
             stopForegroundAndSelf()
         }
@@ -309,6 +416,10 @@ class AioVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        disconnectingFlag = true
+        engineStatusWatcherJob?.cancel()
+        wifiShareObserverJob?.cancel()
+        runCatching { wifiShareProxy?.close() }
         notificationUpdaterJob?.cancel()
         networkMonitor?.stop()
         packetRouter?.stop()

@@ -11,6 +11,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -568,15 +570,15 @@ class DnsManager(
         return false
     }
 
-    private fun parseHttpDnsResponseBody(raw: ByteArray): ByteArray {
+    private fun decodeHttpBody(raw: ByteArray): ByteArray {
         val sepIdx = indexOfCrlfCrlf(raw)
-        if (sepIdx < 0) throw IOException("Respuesta HTTP DoH incompleta")
+        if (sepIdx < 0) throw IOException("Respuesta HTTP incompleta")
         val headerStr = String(raw, 0, sepIdx, StandardCharsets.ISO_8859_1)
         val lines = headerStr.lines()
         val statusLine = lines.firstOrNull().orEmpty()
         val statusCode = statusLine.split(' ').getOrNull(1)?.toIntOrNull() ?: -1
         if (statusCode !in 200..299) {
-            throw IOException("DoH HTTP $statusCode ($statusLine)")
+            throw IOException("HTTP $statusCode ($statusLine)")
         }
         val bodyStart = sepIdx + 4
         val contentLength = lines
@@ -591,6 +593,8 @@ class DnsManager(
         val bodyRaw = raw.copyOfRange(bodyStart, raw.size)
         return if (isChunked) decodeChunkedBody(bodyRaw) else bodyRaw
     }
+
+    private fun parseHttpDnsResponseBody(raw: ByteArray): ByteArray = decodeHttpBody(raw)
 
     private fun decodeChunkedBody(chunked: ByteArray): ByteArray {
         val out = ByteArrayOutputStream()
@@ -683,26 +687,100 @@ class DnsManager(
         }.getOrNull()
     }
 
+    data class ExitIpInfo(
+        val ip: String,
+        val country: String? = null,
+        val countryCode: String? = null,
+        val city: String? = null
+    )
+
     /**
-     * Queries public exit IP through the active TunnelEngine over HTTP/1.1 using api.ipify.org.
-     * Returns null if unreachable—never invents or guesses an IP address.
+     * Queries public exit IP + country/city through the active TunnelEngine.
+     * Tries ip-api.com (HTTP), then ipwho.is (HTTPS over tunnel), then api.ipify.org (HTTP).
      */
-    suspend fun fetchExitIpThroughTunnel(engine: TunnelEngine): String? = withContext(Dispatchers.IO) {
-        runCatching {
+    suspend fun fetchExitIpInfoThroughTunnel(engine: TunnelEngine): ExitIpInfo? = withContext(Dispatchers.IO) {
+        val fromIpApi = runCatching {
+            withTimeoutOrNull(5_000L) {
+                engine.openTcpTunnel("ip-api.com", 80).use { stream ->
+                    val req = "GET /json/?fields=status,country,countryCode,city,query HTTP/1.1\r\n" +
+                        "Host: ip-api.com\r\n" +
+                        "Accept: application/json\r\n" +
+                        "Connection: close\r\n" +
+                        "User-Agent: AIOTunnelVPN/1.0\r\n\r\n"
+                    stream.outputStream.write(req.toByteArray(StandardCharsets.US_ASCII))
+                    stream.outputStream.flush()
+                    val raw = stream.inputStream.readBytes()
+                    val bodyBytes = decodeHttpBody(raw)
+                    parseIpApiJson(String(bodyBytes, StandardCharsets.UTF_8))
+                }
+            }
+        }.getOrNull()
+        if (fromIpApi != null) return@withContext fromIpApi
+
+        val fromIpWho = runCatching {
+            withTimeoutOrNull(5_500L) {
+                executeHttpsGetOverTunnelStream(
+                    host = "ipwho.is",
+                    port = 443,
+                    path = "/",
+                    engine = engine
+                )?.let { parseIpWhoJson(it) }
+            }
+        }.getOrNull()
+        if (fromIpWho != null) return@withContext fromIpWho
+
+        val ipOnly = runCatching {
             withTimeoutOrNull(4_000L) {
                 engine.openTcpTunnel("api.ipify.org", 80).use { stream ->
                     val req = "GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\nUser-Agent: AIOTunnelVPN/1.0\r\n\r\n"
                     stream.outputStream.write(req.toByteArray(StandardCharsets.US_ASCII))
                     stream.outputStream.flush()
                     val raw = stream.inputStream.readBytes()
-                    val text = String(raw, StandardCharsets.UTF_8)
-                    val body = text.substringAfter("\r\n\r\n", "").trim()
-                    if (body.matches(Regex("""^(\d{1,3}\.){3}\d{1,3}$|^[0-9a-fA-F:]+$"""))) {
-                        body
-                    } else null
+                    val body = String(decodeHttpBody(raw), StandardCharsets.UTF_8).trim()
+                    if (isValidIpLiteral(body)) body else null
                 }
             }
         }.getOrNull()
+        ipOnly?.let { ExitIpInfo(ip = it) }
+    }
+
+    /**
+     * Queries public exit IP through the active TunnelEngine over HTTP/1.1.
+     */
+    suspend fun fetchExitIpThroughTunnel(engine: TunnelEngine): String? =
+        fetchExitIpInfoThroughTunnel(engine)?.ip
+
+    private suspend fun executeHttpsGetOverTunnelStream(
+        host: String,
+        port: Int,
+        path: String,
+        engine: TunnelEngine
+    ): String? {
+        var stream: TunnelStream? = null
+        try {
+            stream = engine.openTcpTunnel(host, port)
+            val sslContext = SSLContext.getDefault()
+            val sslEngine = sslContext.createSSLEngine(host, port).apply {
+                useClientMode = true
+                val params = sslParameters
+                params.endpointIdentificationAlgorithm = "HTTPS"
+                params.serverNames = listOf(SNIHostName(host))
+                sslParameters = params
+            }
+            performTlsHandshake(sslEngine, stream)
+            val httpReq = buildString {
+                append("GET ").append(path).append(" HTTP/1.1\r\n")
+                append("Host: ").append(host).append("\r\n")
+                append("Accept: application/json\r\n")
+                append("Connection: close\r\n")
+                append("User-Agent: AIOTunnelVPN/1.0\r\n\r\n")
+            }.toByteArray(StandardCharsets.ISO_8859_1)
+            val rawResponse = sendAndReceiveTlsApplicationData(sslEngine, stream, httpReq)
+            val body = decodeHttpBody(rawResponse)
+            return String(body, StandardCharsets.UTF_8)
+        } finally {
+            runCatching { stream?.close() }
+        }
     }
 
     fun buildSampleDnsQuery(domain: String = "example.com"): ByteArray {
@@ -833,6 +911,63 @@ class DnsManager(
             "dns.adguard.com" to listOf("94.140.14.140", "94.140.14.141"),
             "dns.quad9.net" to listOf("9.9.9.9", "149.112.112.112")
         )
+
+        @Serializable
+        private data class IpApiResponse(
+            val status: String = "",
+            val country: String = "",
+            val countryCode: String = "",
+            val city: String = "",
+            val query: String = ""
+        )
+
+        @Serializable
+        private data class IpWhoResponse(
+            val success: Boolean = false,
+            val ip: String = "",
+            val country: String = "",
+            val country_code: String = "",
+            val city: String = ""
+        )
+
+        private val jsonParser = Json { ignoreUnknownKeys = true }
+
+        fun countryCodeToFlagEmoji(countryCode: String?): String {
+            val code = countryCode?.trim()?.uppercase().orEmpty()
+            if (code.length != 2 || !code[0].isLetter() || !code[1].isLetter()) return "🌐"
+            val first = 0x1F1E6 + (code[0].code - 'A'.code)
+            val second = 0x1F1E6 + (code[1].code - 'A'.code)
+            return String(Character.toChars(first)) + String(Character.toChars(second))
+        }
+
+        internal fun parseIpApiJson(jsonText: String): ExitIpInfo? = runCatching {
+            val obj = jsonParser.decodeFromString<IpApiResponse>(jsonText)
+            if (!obj.status.equals("success", ignoreCase = true)) return null
+            val ip = obj.query.trim()
+            if (!isValidIpLiteral(ip)) return null
+            ExitIpInfo(
+                ip = ip,
+                country = obj.country.trim().ifBlank { null },
+                countryCode = obj.countryCode.trim().ifBlank { null },
+                city = obj.city.trim().ifBlank { null }
+            )
+        }.getOrNull()
+
+        internal fun parseIpWhoJson(jsonText: String): ExitIpInfo? = runCatching {
+            val obj = jsonParser.decodeFromString<IpWhoResponse>(jsonText)
+            if (!obj.success) return null
+            val ip = obj.ip.trim()
+            if (!isValidIpLiteral(ip)) return null
+            ExitIpInfo(
+                ip = ip,
+                country = obj.country.trim().ifBlank { null },
+                countryCode = obj.country_code.trim().ifBlank { null },
+                city = obj.city.trim().ifBlank { null }
+            )
+        }.getOrNull()
+
+        internal fun isValidIpLiteral(value: String): Boolean =
+            value.matches(Regex("""^(\d{1,3}\.){3}\d{1,3}$|^[0-9a-fA-F:]+$"""))
 
         fun isValidIpv4(ip: String): Boolean {
             val parts = ip.trim().split('.')

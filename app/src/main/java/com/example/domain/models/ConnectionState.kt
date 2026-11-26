@@ -10,6 +10,9 @@ sealed class ConnectionState {
         val protocol: TunnelProtocol,
         val serverEndpoint: String,
         val exitIp: String? = null,
+        val exitCountry: String? = null,
+        val exitCountryCode: String? = null,
+        val exitCity: String? = null,
         val latencyMs: Long? = null,
         val connectedSinceMillis: Long = System.currentTimeMillis()
     ) : ConnectionState()

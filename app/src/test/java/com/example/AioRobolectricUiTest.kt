@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.room.Room
 import androidx.sqlite.db.SupportSQLiteDatabase
@@ -53,9 +54,31 @@ class AioRobolectricUiTest {
 
         composeRule.onNodeWithTag("nav_settings").performClick()
         composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_keep_trying_switch").assertIsDisplayed()
         composeRule.onNodeWithTag("settings_auto_reconnect_switch").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_timeout_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_wifi_proxy_switch").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_battery_optimization_button").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("settings_dns1_input").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("settings_dns2_input").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `settings validates timeout bounds and toggles wifi proxy sharing card`() {
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("nav_settings").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("settings_timeout_input").performScrollTo().performTextClearance()
+        composeRule.onNodeWithTag("settings_timeout_input").performTextInput("1500")
+        composeRule.waitForIdle()
+        composeRule.onAllNodesWithText("Rango permitido: mínimo 1 s y máximo 999 s.").fetchSemanticsNodes()
+            .let { org.junit.Assert.assertTrue(it.isNotEmpty()) }
+
+        composeRule.onNodeWithTag("settings_wifi_proxy_switch").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_wifi_proxy_address").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_copy_proxy_ip_button").performScrollTo().assertIsDisplayed()
     }
 
     @Test

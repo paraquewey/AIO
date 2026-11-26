@@ -61,6 +61,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val connectionState: StateFlow<ConnectionState> = connectionManager.connectionState
     val statistics: StateFlow<TunnelStatistics> = statisticsManager.stats
     val pendingHostKeyChallenge: StateFlow<SshHostKeyChallenge?> = connectionManager.pendingHostKeyChallenge
+    val wifiProxyActivePort: StateFlow<Int?> = connectionManager.wifiProxyActivePort
     val logs: StateFlow<List<LogEntry>> = AppLogger.logs
 
     private val _diagnosticResults = MutableStateFlow(defaultDiagnosticChecks())
@@ -297,12 +298,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val t0 = System.currentTimeMillis()
                 val query = dnsMgr.buildSampleDnsQuery("example.com")
                 if (isConnected) {
-                    val engine = activeEngine!!
                     val res = dnsMgr.resolveViaTunnelTcpWithFallback(
                         queryBytes = query,
                         primaryDns = dnsConfig.primaryDns,
                         secondaryDns = dnsConfig.secondaryDns,
-                        engine = engine
+                        engine = activeEngine
                     )
                     val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
                     if (res.responseBytes != null && res.responseBytes.size >= 12) {
@@ -361,7 +361,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val t0 = System.currentTimeMillis()
                 val query = dnsMgr.buildSampleDnsQuery("cloudflare.com")
                 if (isConnected) {
-                    val res = dnsMgr.resolveViaTunnelDohWithDetails(query, dnsConfig, activeEngine!!)
+                    val res = dnsMgr.resolveViaTunnelDohWithDetails(query, dnsConfig, activeEngine)
                     val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
                     if (res.responseBytes != null && res.responseBytes.size >= 12) {
                         DiagnosticCheckResult(
@@ -417,9 +417,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         timestampMillis = System.currentTimeMillis()
                     )
                 } else if (isConnected) {
-                    val engine = activeEngine!!
                     val t0 = System.currentTimeMillis()
-                    val exitIp = dnsMgr.fetchExitIpThroughTunnel(engine)
+                    val exitIp = dnsMgr.fetchExitIpThroughTunnel(activeEngine)
                     val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
                     if (exitIp != null) {
                         DiagnosticCheckResult(
@@ -434,7 +433,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val fallbackTcp = dnsMgr.resolveViaTunnelTcp(
                             queryBytes = dnsMgr.buildSampleDnsQuery("example.com"),
                             dnsIp = dnsConfig.primaryDns,
-                            engine = engine
+                            engine = activeEngine
                         )
                         val dt2 = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
                         if (fallbackTcp != null) {

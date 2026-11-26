@@ -1,5 +1,6 @@
 package com.example.engines.http
 
+import com.example.core.logger.AppLogger
 import com.example.domain.models.ProfileSecrets
 import com.example.domain.models.TunnelProfile
 import com.example.domain.models.TunnelProtocol
@@ -28,6 +29,7 @@ data class HttpResponseHead(
 )
 
 object RawTcpPayloadExecutor {
+    private const val TAG = "RawTcpPayloadExecutor"
 
     fun resolveIpBestEffort(host: String): String {
         val clean = host.trim()
@@ -42,7 +44,7 @@ object RawTcpPayloadExecutor {
         sniHost: String = host,
         verifyTlsCertificate: Boolean = true,
         connectTimeoutMs: Int = 10_000,
-        readTimeoutMs: Int = 30_000,
+        readTimeoutMs: Int = 10_000,
         protectSocket: ((Socket) -> Boolean)? = null
     ): Socket {
         val rawSocket = Socket()
@@ -95,7 +97,7 @@ object RawTcpPayloadExecutor {
         secrets: ProfileSecrets,
         targetHost: String? = null,
         targetPort: Int? = null,
-        baseReadTimeoutMs: Int = 30_000
+        baseReadTimeoutMs: Int = 10_000
     ): String {
         val resolvedIp = resolveIpBestEffort(profile.host)
         val sshTarget = if (!targetHost.isNullOrBlank() && targetPort != null && targetPort in 1..65535) {
@@ -145,50 +147,59 @@ object RawTcpPayloadExecutor {
         baseReadTimeoutMs: Int
     ): String {
         val maxAttempts = expectedResponses.coerceIn(1, 8)
-        var lastHead: HttpResponseHead? = null
+        var effectiveStatusLine: String? = null
 
         for (attempt in 1..maxAttempts) {
-            val head = readHttpResponseHead(bufferedIn)
-            lastHead = head
+            // Preserve direct SSH-2.0- banner if server skipped intermediate HTTP responses
+            if (peekStartsWithPrefix(socket, bufferedIn, "SSH-2.0-", baseReadTimeoutMs, peekTimeoutMs = 120)) {
+                return effectiveStatusLine ?: "SSH-2.0- (banner directo)"
+            }
 
-            if (head.statusCode == 101) {
-                return head.statusLine
+            val head = readHttpResponseHead(bufferedIn)
+            val isValidHttpVersion = head.statusLine.startsWith("HTTP/1.0", ignoreCase = true) ||
+                head.statusLine.startsWith("HTTP/1.1", ignoreCase = true)
+            if (!isValidHttpVersion || head.statusCode !in 100..599) {
+                throw IOException("Respuesta HTTP inválida del servidor -> ${head.statusLine}")
+            }
+
+            effectiveStatusLine = if (head.statusCode == 101 || head.statusCode == 200) {
+                head.statusLine
+            } else {
+                AppLogger.info(TAG, "HTTP/1.1 ${head.statusCode} recibido -> Auto-Replace a 200 OK")
+                "HTTP/1.1 200 OK (Auto-Replace ${head.statusCode})"
+            }
+
+            // Immediately stop without draining any body if SSH-2.0- banner follows headers
+            if (peekStartsWithPrefix(socket, bufferedIn, "SSH-2.0-", baseReadTimeoutMs, peekTimeoutMs = 40)) {
+                return effectiveStatusLine
             }
 
             val hasMorePipelined = attempt < maxAttempts
-            if (head.statusCode in 200..299) {
-                if (!hasMorePipelined && !isWebSocketUpgrade) {
-                    return head.statusLine
-                }
-                if (peekStartsWithHttp(socket, bufferedIn, baseReadTimeoutMs, peekTimeoutMs = 150)) {
-                    if (head.contentLength in 1..MAX_DRAIN_BODY_BYTES &&
-                        !peekStartsWithHttp(socket, bufferedIn, baseReadTimeoutMs, peekTimeoutMs = 40)
-                    ) {
-                        drainExactBytes(bufferedIn, head.contentLength)
-                    }
-                    continue
-                }
-                return head.statusLine
+            if (head.statusCode == 101 && !hasMorePipelined) {
+                return effectiveStatusLine
             }
 
-            if (hasMorePipelined) {
-                if (head.contentLength in 1..MAX_DRAIN_BODY_BYTES &&
-                    !peekStartsWithHttp(socket, bufferedIn, baseReadTimeoutMs, peekTimeoutMs = 120)
+            if (hasMorePipelined || isWebSocketUpgrade) {
+                if (peekStartsWithPrefix(socket, bufferedIn, "HTTP/", baseReadTimeoutMs, peekTimeoutMs = 180)) {
+                    continue
+                }
+                if (hasMorePipelined &&
+                    head.contentLength in 1..MAX_DRAIN_BODY_BYTES &&
+                    !peekStartsWithPrefix(socket, bufferedIn, "SSH-2.0-", baseReadTimeoutMs, peekTimeoutMs = 40)
                 ) {
                     drainExactBytes(bufferedIn, head.contentLength)
-                }
-                if (peekStartsWithHttp(socket, bufferedIn, baseReadTimeoutMs, peekTimeoutMs = 350)) {
-                    continue
+                    if (peekStartsWithPrefix(socket, bufferedIn, "SSH-2.0-", baseReadTimeoutMs, peekTimeoutMs = 40)) {
+                        return effectiveStatusLine
+                    }
+                    if (peekStartsWithPrefix(socket, bufferedIn, "HTTP/", baseReadTimeoutMs, peekTimeoutMs = 250)) {
+                        continue
+                    }
                 }
             }
-            throw IOException("El servidor rechazó el payload HTTP -> ${head.statusLine}")
+            return effectiveStatusLine
         }
 
-        val finalHead = lastHead ?: throw IOException("No se recibió respuesta HTTP del servidor.")
-        if (finalHead.statusCode != 101 && finalHead.statusCode !in 200..299) {
-            throw IOException("El servidor rechazó el payload HTTP -> ${finalHead.statusLine}")
-        }
-        return finalHead.statusLine
+        return effectiveStatusLine ?: throw IOException("No se recibió respuesta HTTP del servidor.")
     }
 
     fun readHttpResponseHead(input: BufferedInputStream): HttpResponseHead {
@@ -222,17 +233,19 @@ object RawTcpPayloadExecutor {
         )
     }
 
-    private fun peekStartsWithHttp(
+    private fun peekStartsWithPrefix(
         socket: Socket,
         bufferedIn: BufferedInputStream,
+        prefix: String,
         baseReadTimeoutMs: Int,
         peekTimeoutMs: Int
     ): Boolean {
+        val targetBytes = prefix.toByteArray(StandardCharsets.ISO_8859_1)
         val previousTimeout = runCatching { socket.soTimeout }.getOrDefault(baseReadTimeoutMs)
         return try {
             socket.soTimeout = peekTimeoutMs
-            bufferedIn.mark(8)
-            val probe = ByteArray(5)
+            bufferedIn.mark(targetBytes.size + 8)
+            val probe = ByteArray(targetBytes.size)
             var read = 0
             while (read < probe.size) {
                 val n = bufferedIn.read(probe, read, probe.size - read)
@@ -240,12 +253,11 @@ object RawTcpPayloadExecutor {
                 read += n
             }
             bufferedIn.reset()
-            read == 5 &&
-                probe[0] == 'H'.code.toByte() &&
-                probe[1] == 'T'.code.toByte() &&
-                probe[2] == 'T'.code.toByte() &&
-                probe[3] == 'P'.code.toByte() &&
-                probe[4] == '/'.code.toByte()
+            if (read < targetBytes.size) return false
+            for (i in targetBytes.indices) {
+                if (probe[i] != targetBytes[i]) return false
+            }
+            true
         } catch (_: SocketTimeoutException) {
             runCatching { bufferedIn.reset() }
             false
@@ -283,7 +295,7 @@ object RawTcpPayloadExecutor {
     }
 
     private fun parseStatusCode(statusLine: String): Int {
-        val parts = statusLine.trim().split(' ')
+        val parts = statusLine.trim().split(Regex("\\s+"))
         return if (parts.size >= 2) parts[1].toIntOrNull() ?: -1 else -1
     }
 

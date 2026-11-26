@@ -93,6 +93,7 @@ class Socks5TunnelEngine : TunnelEngine {
             val socket = openAndAuthenticateSocket(profile, activeSecrets)
             try {
                 sendCommand(socket, CMD_CONNECT, targetHost, targetPort)
+                socket.soTimeout = 0
                 object : TunnelStream {
                     override val inputStream: InputStream = socket.getInputStream()
                     override val outputStream: OutputStream = socket.getOutputStream()
@@ -172,14 +173,15 @@ class Socks5TunnelEngine : TunnelEngine {
 
     private fun openAndAuthenticateSocket(profile: TunnelProfile, secrets: ProfileSecrets): Socket {
         val ctx = context ?: throw IOException("EngineContext ausente.")
+        val timeoutMs = ctx.connectionTimeoutMs.coerceIn(1_000, 999_000)
         val socket = Socket()
         socket.tcpNoDelay = true
         if (!ctx.protectSocket(socket)) {
             socket.close()
             throw IOException("VpnService.protect() rechazó el socket SOCKS5.")
         }
-        socket.connect(InetSocketAddress(profile.host, profile.port), CONNECT_TIMEOUT_MS)
-        socket.soTimeout = READ_TIMEOUT_MS
+        socket.connect(InetSocketAddress(profile.host, profile.port), timeoutMs)
+        socket.soTimeout = timeoutMs
 
         val out = socket.getOutputStream()
         val input = DataInputStream(socket.getInputStream())

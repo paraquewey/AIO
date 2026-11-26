@@ -98,6 +98,7 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val statistics by viewModel.statistics.collectAsStateWithLifecycle()
     val hostKeyChallenge by viewModel.pendingHostKeyChallenge.collectAsStateWithLifecycle()
+    val wifiProxyActivePort by viewModel.wifiProxyActivePort.collectAsStateWithLifecycle()
     val diagnosticResults by viewModel.diagnosticResults.collectAsStateWithLifecycle()
     val knownHosts by viewModel.knownHostKeys.collectAsStateWithLifecycle()
     val logs by viewModel.logs.collectAsStateWithLifecycle()
@@ -309,8 +310,10 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
                             composable<AioRoute.Settings> {
                                 SettingsScreen(
                                     settings = settings,
+                                    wifiProxyActivePort = wifiProxyActivePort,
                                     onUpdateSettings = { viewModel.updateSettings(it) },
-                                    onClearKnownHosts = { viewModel.clearAllKnownHosts() }
+                                    onClearKnownHosts = { viewModel.clearAllKnownHosts() },
+                                    onShowMessage = { viewModel.postMessage(it) }
                                 )
                             }
                             composable<AioRoute.ProfileEditor> { entry ->

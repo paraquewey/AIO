@@ -8,6 +8,10 @@ enum class AppLanguage(val code: String, val label: String) {
 data class AppSettings(
     val selectedProfileId: String? = null,
     val autoReconnectOnNetworkChange: Boolean = true,
+    val keepTryingToConnect: Boolean = true,
+    val connectionTimeoutSeconds: Int = 10,
+    val wifiProxyShareEnabled: Boolean = false,
+    val wifiProxySharePort: Int = 8080,
     val failoverToNextServer: Boolean = false,
     val defaultDnsMode: DnsMode = DnsMode.DNS_OVER_HTTPS,
     val defaultDnsServer: String = "1.1.1.1",

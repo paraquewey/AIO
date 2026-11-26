@@ -39,7 +39,7 @@ class AioTunnelApplication : Application() {
         settingsRepository = SettingsRepository(SettingsDataStore(this))
         statisticsManager = StatisticsManager()
         engineFactory = EngineFactory(sshHostKeyStore)
-        connectionManager = ConnectionManager(this)
+        connectionManager = ConnectionManager(this, settingsRepository)
 
         AppLogger.info("AioApp", "AIO Tunnel VPN inicializado (Keystore AES-GCM=${cryptoManager.isKeystoreHardwareAvailable()})")
     }

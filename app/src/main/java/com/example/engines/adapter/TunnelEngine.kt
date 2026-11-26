@@ -84,7 +84,8 @@ data class EngineContext(
     val protectSocket: (Socket) -> Boolean,
     val protectDatagramSocket: (DatagramSocket) -> Boolean,
     val statisticsManager: StatisticsManager,
-    val onSshHostKeyChallenge: suspend (SshHostKeyChallenge) -> Boolean
+    val onSshHostKeyChallenge: suspend (SshHostKeyChallenge) -> Boolean,
+    val connectionTimeoutMs: Int = 10_000
 )
 
 interface TunnelEngine {

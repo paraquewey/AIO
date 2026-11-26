@@ -93,6 +93,7 @@ class SshTunnelEngine(
             if (validation.isFailure) return@withContext validation
 
             val ctx = context ?: return@withContext Result.failure(IllegalStateException("EngineContext ausente."))
+            val timeoutMs = ctx.connectionTimeoutMs.coerceIn(1_000, 999_000)
             _status.value = EngineStatus.STARTING
 
             return@withContext runCatching {
@@ -113,13 +114,13 @@ class SshTunnelEngine(
                         )
                     }
                     val jSession = jumpJsch.getSession(profile.jumpUsername, profile.jumpHost, profile.jumpPort)
-                    jSession.setSocketFactory(ProtectedSocketFactory(ctx.protectSocket, profile, secrets, applyPayload = false))
+                    jSession.setSocketFactory(ProtectedSocketFactory(ctx.protectSocket, profile, secrets, applyPayload = false, timeoutMs = timeoutMs))
                     if (profile.jumpAuthMethod == SshAuthMethod.PASSWORD) {
                         jSession.setPassword(secrets.jumpPassword.toByteArray(StandardCharsets.UTF_8))
                     }
                     configureSession(jSession, ctx, profile.jumpHost, profile.jumpPort)
-                    AppLogger.info(TAG, "Conectando Jump Host SSH ${profile.jumpHost}:${profile.jumpPort}...")
-                    jSession.connect(CONNECT_TIMEOUT_MS)
+                    AppLogger.info(TAG, "Conectando Jump Host SSH ${profile.jumpHost}:${profile.jumpPort} (timeout=${timeoutMs} ms)...")
+                    jSession.connect(timeoutMs)
                     jumpSession = jSession
                     forwardedLocalPort = jSession.setPortForwardingL("127.0.0.1", 0, profile.host, profile.port)
                     AppLogger.info(TAG, "Túnel Jump Host activo en loopback:$forwardedLocalPort")
@@ -143,7 +144,8 @@ class SshTunnelEngine(
                             protectSocket = ctx.protectSocket,
                             profile = profile,
                             secrets = secrets,
-                            applyPayload = profile.rawHttpPayload.isNotEmpty() || profile.tlsEnabled
+                            applyPayload = profile.rawHttpPayload.isNotEmpty() || profile.tlsEnabled,
+                            timeoutMs = timeoutMs
                         )
                     )
                 }
@@ -153,8 +155,8 @@ class SshTunnelEngine(
                 session.hostKeyAlias = "${profile.host}:${profile.port}"
                 configureSession(session, ctx, profile.host, profile.port)
 
-                AppLogger.info(TAG, "Autenticando sesión SSH contra ${profile.host}:${profile.port}...")
-                session.connect(CONNECT_TIMEOUT_MS)
+                AppLogger.info(TAG, "Autenticando sesión SSH contra ${profile.host}:${profile.port} (timeout=${timeoutMs} ms)...")
+                session.connect(timeoutMs)
                 session.serverAliveInterval = 25_000
                 session.serverAliveCountMax = 3
                 primarySession = session
@@ -212,7 +214,8 @@ class SshTunnelEngine(
             channel.setOrgPort(0)
             val input = channel.inputStream
             val output = channel.outputStream
-            channel.connect(CONNECT_TIMEOUT_MS)
+            val timeoutMs = (context?.connectionTimeoutMs ?: CONNECT_TIMEOUT_MS).coerceIn(1_000, 999_000)
+            channel.connect(timeoutMs)
 
             object : TunnelStream {
                 override val inputStream: InputStream = input
@@ -342,7 +345,8 @@ class SshTunnelEngine(
         private val protectSocket: (Socket) -> Boolean,
         private val profile: TunnelProfile,
         private val secrets: ProfileSecrets,
-        private val applyPayload: Boolean
+        private val applyPayload: Boolean,
+        private val timeoutMs: Int
     ) : SocketFactory {
         private val bufferedInputs = IdentityHashMap<Socket, InputStream>()
 
@@ -355,7 +359,7 @@ class SshTunnelEngine(
                     socket.close()
                     throw IOException("VpnService.protect() rechazó socket SSH.")
                 }
-                socket.connect(InetSocketAddress(targetHost, port), CONNECT_TIMEOUT_MS)
+                socket.connect(InetSocketAddress(targetHost, port), timeoutMs)
                 return socket
             }
 
@@ -365,8 +369,8 @@ class SshTunnelEngine(
                 useTls = profile.tlsEnabled,
                 sniHost = profile.tlsServerName.ifBlank { profile.host.trim() },
                 verifyTlsCertificate = profile.verifyTlsCertificate,
-                connectTimeoutMs = CONNECT_TIMEOUT_MS,
-                readTimeoutMs = CONNECT_TIMEOUT_MS,
+                connectTimeoutMs = timeoutMs,
+                readTimeoutMs = timeoutMs,
                 protectSocket = protectSocket
             )
             try {
@@ -379,7 +383,7 @@ class SshTunnelEngine(
                         secrets = secrets,
                         targetHost = targetHost,
                         targetPort = port,
-                        baseReadTimeoutMs = CONNECT_TIMEOUT_MS
+                        baseReadTimeoutMs = timeoutMs
                     )
                     AppLogger.info(TAG, "Payload SSH/WS aceptado: $statusLine")
                     synchronized(bufferedInputs) {

@@ -49,6 +49,9 @@ class HttpConnectProxyEngine : TunnelEngine {
         _status.value = EngineStatus.INITIALIZED
     }
 
+    private fun effectiveTimeoutMs(): Int =
+        (context?.connectionTimeoutMs ?: DEFAULT_CONNECT_TIMEOUT_MS).coerceIn(1_000, 999_000)
+
     override suspend fun start(profile: TunnelProfile, secrets: ProfileSecrets): Result<Unit> =
         withContext(Dispatchers.IO) {
             val validation = validateConfiguration(profile, secrets)
@@ -57,9 +60,10 @@ class HttpConnectProxyEngine : TunnelEngine {
             _status.value = EngineStatus.STARTING
             activeProfile = profile
             activeSecrets = secrets
+            val timeoutMs = effectiveTimeoutMs()
 
             return@withContext runCatching {
-                val socket = createProtectedSocket(profile)
+                val socket = createProtectedSocket(profile, timeoutMs)
                 socket.use { sock ->
                     if (profile.rawHttpPayload.isNotEmpty()) {
                         val bufferedIn = BufferedInputStream(sock.getInputStream())
@@ -68,7 +72,7 @@ class HttpConnectProxyEngine : TunnelEngine {
                             bufferedIn = bufferedIn,
                             profile = profile,
                             secrets = secrets,
-                            baseReadTimeoutMs = READ_TIMEOUT_MS
+                            baseReadTimeoutMs = timeoutMs
                         )
                         AppLogger.info(
                             TAG,
@@ -98,7 +102,8 @@ class HttpConnectProxyEngine : TunnelEngine {
     override suspend fun openTcpTunnel(targetHost: String, targetPort: Int): TunnelStream =
         withContext(Dispatchers.IO) {
             val profile = activeProfile ?: throw IOException("Motor HTTP/HTTPS no inicializado.")
-            val socket = createProtectedSocket(profile)
+            val timeoutMs = effectiveTimeoutMs()
+            val socket = createProtectedSocket(profile, timeoutMs)
             try {
                 val bufferedIn = BufferedInputStream(socket.getInputStream())
                 val out = socket.getOutputStream()
@@ -110,9 +115,10 @@ class HttpConnectProxyEngine : TunnelEngine {
                         secrets = activeSecrets,
                         targetHost = targetHost,
                         targetPort = targetPort,
-                        baseReadTimeoutMs = READ_TIMEOUT_MS
+                        baseReadTimeoutMs = timeoutMs
                     )
                 }
+                socket.soTimeout = 0
 
                 object : TunnelStream {
                     override val inputStream: InputStream = bufferedIn
@@ -127,7 +133,7 @@ class HttpConnectProxyEngine : TunnelEngine {
             }
         }
 
-    private fun createProtectedSocket(profile: TunnelProfile): Socket {
+    private fun createProtectedSocket(profile: TunnelProfile, timeoutMs: Int): Socket {
         val ctx = context ?: throw IOException("EngineContext ausente.")
         return RawTcpPayloadExecutor.connectRawSocket(
             host = profile.host.trim(),
@@ -135,8 +141,8 @@ class HttpConnectProxyEngine : TunnelEngine {
             useTls = RawTcpPayloadExecutor.usesTls(profile),
             sniHost = profile.tlsServerName.ifBlank { profile.host.trim() },
             verifyTlsCertificate = profile.verifyTlsCertificate,
-            connectTimeoutMs = CONNECT_TIMEOUT_MS,
-            readTimeoutMs = READ_TIMEOUT_MS,
+            connectTimeoutMs = timeoutMs,
+            readTimeoutMs = timeoutMs,
             protectSocket = ctx.protectSocket
         )
     }
@@ -152,8 +158,7 @@ class HttpConnectProxyEngine : TunnelEngine {
 
     companion object {
         private const val TAG = "HttpConnectEngine"
-        private const val CONNECT_TIMEOUT_MS = 10_000
-        private const val READ_TIMEOUT_MS = 30_000
+        private const val DEFAULT_CONNECT_TIMEOUT_MS = 10_000
 
         fun probeHttpEndpoint(
             profile: TunnelProfile,

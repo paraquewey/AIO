@@ -441,17 +441,23 @@ fun DashboardScreen(
                     icon = Icons.Default.ArrowDownward,
                     label = "Descarga",
                     value = formatSpeed(statistics.downloadBytesPerSec),
-                    subValue = "Recibido: ${formatBytes(statistics.bytesReceived)}",
+                    subValue = "Pico: ${formatSpeed(statistics.peakDownloadBytesPerSec)}",
+                    extraSubValue = "Recibido: ${formatBytes(statistics.bytesReceived)}",
                     accent = GruvboxGreen,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("dashboard_download_tile")
                 )
                 MetricTile(
                     icon = Icons.Default.ArrowUpward,
                     label = "Subida",
                     value = formatSpeed(statistics.uploadBytesPerSec),
-                    subValue = "Enviado: ${formatBytes(statistics.bytesSent)}",
+                    subValue = "Pico: ${formatSpeed(statistics.peakUploadBytesPerSec)}",
+                    extraSubValue = "Enviado: ${formatBytes(statistics.bytesSent)}",
                     accent = GruvboxOrange,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("dashboard_upload_tile")
                 )
             }
 
@@ -459,18 +465,32 @@ fun DashboardScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                val exitIp = (connectionState as? ConnectionState.Connected)?.exitIp
+                val connected = connectionState as? ConnectionState.Connected
+                val exitIp = connected?.exitIp
+                val locationLine = if (connected != null) {
+                    val parts = listOfNotNull(
+                        connected.exitCountry?.takeIf { it.isNotBlank() },
+                        connected.exitCity?.takeIf { it.isNotBlank() }
+                    )
+                    if (parts.isNotEmpty()) {
+                        val flag = com.example.vpn.tun.DnsManager.countryCodeToFlagEmoji(connected.exitCountryCode)
+                        "$flag ${parts.joinToString(" • ")}"
+                    } else {
+                        "Ubicación: consultando..."
+                    }
+                } else {
+                    "Requiere túnel activo"
+                }
                 MetricTile(
                     icon = Icons.Default.Public,
                     label = "IP de salida",
-                    value = exitIp ?: "No disponible",
-                    subValue = if (connectionState is ConnectionState.Connected) {
-                        "Flujos TCP: ${statistics.activeTcpConnections}"
-                    } else {
-                        "Requiere túnel activo"
-                    },
+                    value = exitIp ?: if (connected != null) "Consultando..." else "No disponible",
+                    subValue = locationLine,
+                    extraSubValue = if (connected != null) "Flujos TCP: ${statistics.activeTcpConnections}" else null,
                     accent = GruvboxAqua,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("dashboard_exit_ip_tile")
                 )
                 MetricTile(
                     icon = Icons.Default.Speed,
@@ -492,7 +512,8 @@ private fun MetricTile(
     value: String,
     subValue: String,
     accent: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    extraSubValue: String? = null
 ) {
     GlassCard(modifier = modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -531,9 +552,19 @@ private fun MetricTile(
         Text(
             text = subValue,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = if (extraSubValue != null) accent else MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
+        if (!extraSubValue.isNullOrBlank()) {
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = extraSubValue,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
