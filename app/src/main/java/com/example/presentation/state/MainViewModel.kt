@@ -79,6 +79,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _userMessage = MutableStateFlow<String?>(null)
     val userMessage: StateFlow<String?> = _userMessage.asStateFlow()
 
+    private val diagnosticsDnsManager = DnsManager(
+        protectSocket = { true },
+        protectDatagramSocket = { true }
+    )
+
+    override fun onCleared() {
+        runCatching { diagnosticsDnsManager.close() }
+        super.onCleared()
+    }
+
     init {
         refreshKnownHosts()
         viewModelScope.launch {
@@ -288,23 +298,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             _diagnosticResults.value = runningChecks
 
-            val dnsMgr = DnsManager(
-                protectSocket = { true },
-                protectDatagramSocket = { true }
-            )
+            val dnsMgr = diagnosticsDnsManager
 
             // 1. DNS Resolution check (In-tunnel TCP when connected vs direct UDP when disconnected)
             val dnsResult = withContext(Dispatchers.IO) {
-                val t0 = System.currentTimeMillis()
+                val t0 = System.nanoTime()
                 val query = dnsMgr.buildSampleDnsQuery("example.com")
                 if (isConnected) {
                     val res = dnsMgr.resolveViaTunnelTcpWithFallback(
                         queryBytes = query,
                         primaryDns = dnsConfig.primaryDns,
                         secondaryDns = dnsConfig.secondaryDns,
-                        engine = activeEngine
+                        engine = activeEngine,
+                        bypassCache = true
                     )
-                    val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                    val dt = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
                     if (res.responseBytes != null && res.responseBytes.size >= 12) {
                         DiagnosticCheckResult(
                             id = "dns_udp",
@@ -333,7 +341,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         primaryDns = dnsConfig.primaryDns,
                         secondaryDns = dnsConfig.secondaryDns
                     )
-                    val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                    val dt = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
                     if (res.responseBytes != null && res.responseBytes.size >= 12) {
                         DiagnosticCheckResult(
                             id = "dns_udp",
@@ -358,11 +366,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             // 2. DoH RFC 8484 check (In-tunnel when connected vs direct when disconnected)
             val dohResult = withContext(Dispatchers.IO) {
-                val t0 = System.currentTimeMillis()
+                val t0 = System.nanoTime()
                 val query = dnsMgr.buildSampleDnsQuery("cloudflare.com")
                 if (isConnected) {
-                    val res = dnsMgr.resolveViaTunnelDohWithDetails(query, dnsConfig, activeEngine)
-                    val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                    val res = dnsMgr.resolveViaTunnelDohWithDetails(
+                        queryBytes = query,
+                        dnsConfig = dnsConfig,
+                        engine = activeEngine,
+                        bypassCache = true
+                    )
+                    val dt = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
                     if (res.responseBytes != null && res.responseBytes.size >= 12) {
                         DiagnosticCheckResult(
                             id = "doh",
@@ -383,7 +396,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 } else {
                     val resp = dnsMgr.resolveViaDohDirect(query, dnsConfig.dohUrl)
-                    val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                    val dt = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
                     if (resp != null && resp.size >= 12) {
                         DiagnosticCheckResult(
                             id = "doh",
@@ -406,7 +419,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             updateDiagnosticItem(dohResult)
 
-            // 3. Server Endpoint / Tunnel Flow probe
+            // 3. Server Endpoint / Tunnel Flow probe (real TTFB via HEAD / 204 without cold setup + body download)
             val serverResult = withContext(Dispatchers.IO) {
                 if (activeProfile == null) {
                     DiagnosticCheckResult(
@@ -417,31 +430,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         timestampMillis = System.currentTimeMillis()
                     )
                 } else if (isConnected) {
-                    val t0 = System.currentTimeMillis()
-                    val exitIp = dnsMgr.fetchExitIpThroughTunnel(activeEngine)
-                    val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
-                    if (exitIp != null) {
+                    val knownExitIp = (connectionState.value as? ConnectionState.Connected)?.exitIp
+                    val ttfbProbe = dnsMgr.probeTunnelExitTtfb(activeEngine, cachedExitIp = knownExitIp)
+                    if (ttfbProbe != null) {
+                        val resolvedExitIp = knownExitIp ?: dnsMgr.fetchExitIpThroughTunnel(activeEngine)
+                        val ipText = resolvedExitIp?.let { " · IP de salida: $it" }.orEmpty()
                         DiagnosticCheckResult(
                             id = "server_probe",
                             title = "Salida del túnel (${activeProfile.host}:${activeProfile.port})",
                             status = DiagnosticStatus.PASSED,
-                            summary = "Flujo TCP activo por túnel · IP de salida: $exitIp",
-                            latencyMs = dt,
+                            summary = "TTFB HTTP ${ttfbProbe.statusCode} sin descarga de cuerpo$ipText",
+                            latencyMs = ttfbProbe.ttfbMs,
                             timestampMillis = System.currentTimeMillis()
                         )
                     } else {
+                        val t0 = System.nanoTime()
                         val fallbackTcp = dnsMgr.resolveViaTunnelTcp(
                             queryBytes = dnsMgr.buildSampleDnsQuery("example.com"),
                             dnsIp = dnsConfig.primaryDns,
                             engine = activeEngine
                         )
-                        val dt2 = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                        val dt2 = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
                         if (fallbackTcp != null) {
                             DiagnosticCheckResult(
                                 id = "server_probe",
                                 title = "Salida del túnel (${activeProfile.host}:${activeProfile.port})",
                                 status = DiagnosticStatus.PASSED,
-                                summary = "Túnel TCP operativo (api.ipify.org no respondió, DNS TCP OK)",
+                                summary = "Túnel TCP operativo (endpoint 204 no respondió, DNS TCP OK)",
                                 latencyMs = dt2,
                                 timestampMillis = System.currentTimeMillis()
                             )

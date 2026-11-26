@@ -64,6 +64,7 @@ object RawTcpPayloadExecutor {
         val effectiveSni = sniHost.ifBlank { host }
         val sslFactory = createSslSocketFactory(verifyTlsCertificate)
         val sslSocket = sslFactory.createSocket(rawSocket, effectiveSni, port, true) as SSLSocket
+        runCatching { sslSocket.tcpNoDelay = true }
         sslSocket.soTimeout = readTimeoutMs
         sslSocket.startHandshake()
 

@@ -13,11 +13,17 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import okhttp3.Call
+import okhttp3.ConnectionPool
+import okhttp3.Dns
+import okhttp3.EventListener
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.ByteArrayOutputStream
+import java.io.Closeable
 import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
@@ -26,18 +32,24 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.Socket
 import java.net.URI
-import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
+import java.security.cert.X509Certificate
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import javax.net.SocketFactory
-import javax.net.ssl.SNIHostName
-import javax.net.ssl.SSLContext
-import javax.net.ssl.SSLEngineResult
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLSession
+import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.X509TrustManager
 
 class DnsManager(
     private val protectSocket: (Socket) -> Boolean = { true },
-    private val protectDatagramSocket: (DatagramSocket) -> Boolean = { true }
-) {
+    private val protectDatagramSocket: (DatagramSocket) -> Boolean = { true },
+    internal val dohSslSocketFactoryOverride: SSLSocketFactory? = null,
+    internal val dohTrustManagerOverride: X509TrustManager? = null
+) : Closeable {
     data class ResolvedDnsConfig(
         val dnsMode: DnsMode,
         val primaryDns: String,
@@ -49,39 +61,186 @@ class DnsManager(
         val responseBytes: ByteArray?,
         val serverLabel: String,
         val usedFallback: Boolean = false,
-        val errorSummary: String? = null
+        val errorSummary: String? = null,
+        val fromCache: Boolean = false
+    )
+
+    data class TunnelExitProbeResult(
+        val ttfbMs: Long,
+        val statusCode: Int,
+        val endpointLabel: String,
+        val exitIp: String? = null
     )
 
     private data class DohEndpointTarget(
+        val url: String,
         val connectIp: String,
         val port: Int,
-        val sniHost: String,
-        val hostHeader: String,
-        val path: String
+        val hostHeader: String
     )
+
+    private data class CachedDnsEntry(
+        val responseBytes: ByteArray,
+        val expiresAtMs: Long,
+        @Volatile var lastAccessedOrder: Long
+    )
+
+    private val dnsCache = ConcurrentHashMap<String, CachedDnsEntry>()
+    private val cacheAccessSeq = AtomicLong(0L)
+    private val bridgeLock = Any()
+
+    @Volatile
+    private var activeBridge: TunnelSocketBridge? = null
+
+    @Volatile
+    private var tunnelHttpClient: OkHttpClient? = null
+
+    @Volatile
+    private var tunnelProbesClient: OkHttpClient? = null
 
     // Used ONLY for disconnected-mode direct probes (never for user TUN traffic when VPN is active)
     private val protectedHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
             .connectTimeout(DNS_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .readTimeout(DNS_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .socketFactory(object : SocketFactory() {
-                override fun createSocket(): Socket = Socket().also { protectSocket(it) }
+                override fun createSocket(): Socket = Socket().apply { tcpNoDelay = true }.also { protectSocket(it) }
                 override fun createSocket(host: String?, port: Int): Socket =
-                    Socket(host, port).also { protectSocket(it) }
+                    Socket(host, port).apply { tcpNoDelay = true }.also { protectSocket(it) }
                 override fun createSocket(host: String?, port: Int, localHost: InetAddress?, localPort: Int): Socket =
-                    Socket(host, port, localHost, localPort).also { protectSocket(it) }
+                    Socket(host, port, localHost, localPort).apply { tcpNoDelay = true }.also { protectSocket(it) }
                 override fun createSocket(host: InetAddress?, port: Int): Socket =
-                    Socket(host, port).also { protectSocket(it) }
+                    Socket(host, port).apply { tcpNoDelay = true }.also { protectSocket(it) }
                 override fun createSocket(address: InetAddress?, port: Int, localAddress: InetAddress?, localPort: Int): Socket =
-                    Socket(address, port, localAddress, localPort).also { protectSocket(it) }
+                    Socket(address, port, localAddress, localPort).apply { tcpNoDelay = true }.also { protectSocket(it) }
+            })
+            .hostnameVerifier(HostnameVerifier { hostname, session ->
+                verifyDohHostnameOrIpSan(hostname, session)
             })
             .build()
     }
 
+    fun clearCache() {
+        dnsCache.clear()
+    }
+
+    fun cacheSize(): Int = dnsCache.size
+
+    private fun getOrCreateTunnelDohClient(engine: TunnelEngine): OkHttpClient {
+        synchronized(bridgeLock) {
+            val currentBridge = activeBridge
+            if (currentBridge != null && currentBridge.engine === engine) {
+                tunnelHttpClient?.let { return it }
+            }
+            closeTunnelClientsLocked()
+
+            val bridge = TunnelSocketBridge(engine)
+            val socketFactory = bridge.createSocketFactory()
+            val tunnelDns = object : Dns {
+                override fun lookup(hostname: String): List<InetAddress> =
+                    resolveHostnameSynchronouslyForBridge(hostname, engine)
+            }
+            val verifier = HostnameVerifier { hostname, session ->
+                verifyDohHostnameOrIpSan(hostname, session)
+            }
+
+            val dohClient = OkHttpClient.Builder()
+                .socketFactory(socketFactory)
+                .dns(tunnelDns)
+                .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
+                .connectionPool(ConnectionPool(4, 2, TimeUnit.MINUTES))
+                .connectTimeout(DNS_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .readTimeout(DNS_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .writeTimeout(DNS_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .retryOnConnectionFailure(true)
+                .hostnameVerifier(verifier)
+                .apply {
+                    if (dohSslSocketFactoryOverride != null && dohTrustManagerOverride != null) {
+                        sslSocketFactory(dohSslSocketFactoryOverride, dohTrustManagerOverride)
+                    }
+                }
+                .build()
+
+            val probeClient = OkHttpClient.Builder()
+                .socketFactory(socketFactory)
+                .dns(tunnelDns)
+                .protocols(listOf(Protocol.HTTP_1_1))
+                .connectionPool(ConnectionPool(4, 2, TimeUnit.MINUTES))
+                .connectTimeout(5_000L, TimeUnit.MILLISECONDS)
+                .readTimeout(5_000L, TimeUnit.MILLISECONDS)
+                .writeTimeout(5_000L, TimeUnit.MILLISECONDS)
+                .retryOnConnectionFailure(true)
+                .hostnameVerifier(verifier)
+                .build()
+
+            activeBridge = bridge
+            tunnelHttpClient = dohClient
+            tunnelProbesClient = probeClient
+            return dohClient
+        }
+    }
+
+    private fun getOrCreateTunnelProbeClient(engine: TunnelEngine): OkHttpClient {
+        getOrCreateTunnelDohClient(engine)
+        return synchronized(bridgeLock) {
+            tunnelProbesClient ?: getOrCreateTunnelDohClient(engine)
+        }
+    }
+
+    private fun resolveHostnameSynchronouslyForBridge(hostname: String, engine: TunnelEngine): List<InetAddress> {
+        val clean = hostname.trim()
+        if (isValidIpv4(clean)) {
+            return listOf(ipv4ToInetAddress(clean, clean))
+        }
+        val knownIps = WELL_KNOWN_DOH_HOST_TO_IPS[clean.lowercase()]
+            ?: WELL_KNOWN_PROBE_HOST_TO_IPS[clean.lowercase()]
+        if (!knownIps.isNullOrEmpty()) {
+            return knownIps.map { ip -> ipv4ToInetAddress(clean, ip) }
+        }
+        val resolved = kotlinx.coroutines.runBlocking {
+            resolveHostnameToIpv4ViaTunnelTcp(
+                hostname = clean,
+                dnsConfig = ResolvedDnsConfig(
+                    dnsMode = DnsMode.PLAIN_DNS,
+                    primaryDns = DEFAULT_PRIMARY_DNS,
+                    secondaryDns = DEFAULT_SECONDARY_DNS,
+                    dohUrl = DEFAULT_DOH_URL
+                ),
+                engine = engine
+            )
+        }
+        if (resolved != null && isValidIpv4(resolved)) {
+            return listOf(ipv4ToInetAddress(clean, resolved))
+        }
+        throw IOException("No se pudo resolver '$clean' dentro del túnel sin DNS del sistema.")
+    }
+
+    private fun ipv4ToInetAddress(hostname: String, ipLiteral: String): InetAddress {
+        val parts = ipLiteral.trim().split('.')
+        val raw = ByteArray(4) { idx -> (parts[idx].toInt() and 0xFF).toByte() }
+        return InetAddress.getByAddress(hostname, raw)
+    }
+
+    private fun closeTunnelClientsLocked() {
+        runCatching { tunnelHttpClient?.connectionPool?.evictAll() }
+        runCatching { tunnelProbesClient?.connectionPool?.evictAll() }
+        tunnelHttpClient = null
+        tunnelProbesClient = null
+        runCatching { activeBridge?.close() }
+        activeBridge = null
+    }
+
+    override fun close() {
+        synchronized(bridgeLock) {
+            closeTunnelClientsLocked()
+        }
+    }
+
     /**
      * Resolves active DNS queries coming from tun0 strictly through the active TunnelEngine:
-     *  - DNS_OVER_HTTPS -> DoH inside tunnel TLS+TCP, falling back to DNS-over-TCP and UDPGW.
+     *  - Checks thread-safe LRU+TTL in-memory cache first (< 2 ms).
+     *  - DNS_OVER_HTTPS -> DoH inside tunnel TLS+TCP (HTTP/2 keep-alive), falling back to DNS-over-TCP and UDPGW.
      *  - PLAIN_DNS -> DNS-over-TCP (RFC 1035 2-byte framing) with primaryDns -> secondaryDns fallback,
      *    falling back to UDPGW if TCP/53 is blocked.
      *  - SYSTEM_DEFAULT -> Active interception (NEVER passive bypass): tries BadVPN UDPGW if connected,
@@ -92,16 +251,25 @@ class DnsManager(
         queryBytes: ByteArray,
         dnsConfig: ResolvedDnsConfig,
         engine: TunnelEngine,
-        udpRelay: UdpRelaySession? = null
+        udpRelay: UdpRelaySession? = null,
+        bypassCache: Boolean = false
     ): ByteArray? = withContext(Dispatchers.IO) {
-        when (dnsConfig.dnsMode) {
+        if (queryBytes.size < 12) return@withContext null
+
+        val cacheScopeKey = "${dnsConfig.dnsMode.name}:${dnsConfig.primaryDns}:${dnsConfig.dohUrl}"
+        if (!bypassCache) {
+            lookupCachedResponse(queryBytes, cacheScopeKey)?.let { return@withContext it }
+        }
+
+        val resolved = when (dnsConfig.dnsMode) {
             DnsMode.DNS_OVER_HTTPS -> {
-                resolveViaTunnelDohWithDetails(queryBytes, dnsConfig, engine).responseBytes
+                resolveViaTunnelDohWithDetails(queryBytes, dnsConfig, engine, bypassCache = true).responseBytes
                     ?: resolveViaTunnelTcpWithFallback(
                         queryBytes = queryBytes,
                         primaryDns = dnsConfig.primaryDns,
                         secondaryDns = dnsConfig.secondaryDns,
-                        engine = engine
+                        engine = engine,
+                        bypassCache = true
                     ).responseBytes
                     ?: resolveViaUdpgwWithFallback(queryBytes, dnsConfig, udpRelay)
             }
@@ -110,7 +278,8 @@ class DnsManager(
                     queryBytes = queryBytes,
                     primaryDns = dnsConfig.primaryDns,
                     secondaryDns = dnsConfig.secondaryDns,
-                    engine = engine
+                    engine = engine,
+                    bypassCache = true
                 ).responseBytes
                     ?: resolveViaUdpgwWithFallback(queryBytes, dnsConfig, udpRelay)
             }
@@ -120,10 +289,117 @@ class DnsManager(
                         queryBytes = queryBytes,
                         primaryDns = dnsConfig.primaryDns,
                         secondaryDns = dnsConfig.secondaryDns,
-                        engine = engine
+                        engine = engine,
+                        bypassCache = true
                     ).responseBytes
             }
         }
+
+        if (resolved != null && !bypassCache) {
+            storeCachedResponse(queryBytes, resolved, cacheScopeKey)
+        }
+        resolved
+    }
+
+    private fun lookupCachedResponse(queryBytes: ByteArray, cacheScopeKey: String): ByteArray? {
+        val qKey = buildDnsCacheKey(queryBytes, cacheScopeKey) ?: return null
+        val entry = dnsCache[qKey] ?: return null
+        val now = System.currentTimeMillis()
+        if (now >= entry.expiresAtMs) {
+            dnsCache.remove(qKey, entry)
+            return null
+        }
+        entry.lastAccessedOrder = cacheAccessSeq.incrementAndGet()
+        val copy = entry.responseBytes.copyOf()
+        if (copy.size >= 2) {
+            copy[0] = queryBytes[0]
+            copy[1] = queryBytes[1]
+        }
+        return copy
+    }
+
+    private fun storeCachedResponse(queryBytes: ByteArray, responseBytes: ByteArray, cacheScopeKey: String) {
+        if (responseBytes.size < 12) return
+        val rcode = responseBytes[3].toInt() and 0x0F
+        val anCount = ((responseBytes[6].toInt() and 0xFF) shl 8) or (responseBytes[7].toInt() and 0xFF)
+        if (rcode != 0 || anCount <= 0) return
+
+        val qKey = buildDnsCacheKey(queryBytes, cacheScopeKey) ?: return
+        val ttlSec = extractMinDnsTtlSeconds(responseBytes).coerceIn(MIN_CACHE_TTL_SECONDS, MAX_CACHE_TTL_SECONDS)
+        val now = System.currentTimeMillis()
+        val entry = CachedDnsEntry(
+            responseBytes = responseBytes.copyOf(),
+            expiresAtMs = now + (ttlSec * 1_000L),
+            lastAccessedOrder = cacheAccessSeq.incrementAndGet()
+        )
+        if (dnsCache.size >= MAX_DNS_CACHE_ENTRIES && !dnsCache.containsKey(qKey)) {
+            evictCacheEntries(now)
+        }
+        dnsCache[qKey] = entry
+    }
+
+    private fun evictCacheEntries(nowMs: Long) {
+        dnsCache.entries.removeIf { it.value.expiresAtMs <= nowMs }
+        while (dnsCache.size >= MAX_DNS_CACHE_ENTRIES) {
+            val lruKey = dnsCache.entries.minByOrNull { it.value.lastAccessedOrder }?.key ?: break
+            dnsCache.remove(lruKey)
+        }
+    }
+
+    internal fun buildDnsCacheKey(queryBytes: ByteArray, scopeKey: String): String? {
+        if (queryBytes.size < 13) return null
+        val qdCount = ((queryBytes[4].toInt() and 0xFF) shl 8) or (queryBytes[5].toInt() and 0xFF)
+        if (qdCount != 1) return null
+        val nameBuilder = StringBuilder()
+        var pos = 12
+        var hops = 0
+        while (pos < queryBytes.size && hops++ < 64) {
+            val len = queryBytes[pos].toInt() and 0xFF
+            if (len == 0) {
+                pos++
+                break
+            }
+            if ((len and 0xC0) != 0) return null // Queries should not start with compression pointer
+            pos++
+            if (pos + len > queryBytes.size) return null
+            if (nameBuilder.isNotEmpty()) nameBuilder.append('.')
+            nameBuilder.append(String(queryBytes, pos, len, StandardCharsets.US_ASCII).lowercase())
+            pos += len
+        }
+        if (pos + 4 > queryBytes.size) return null
+        val qType = ((queryBytes[pos].toInt() and 0xFF) shl 8) or (queryBytes[pos + 1].toInt() and 0xFF)
+        val qClass = ((queryBytes[pos + 2].toInt() and 0xFF) shl 8) or (queryBytes[pos + 3].toInt() and 0xFF)
+        return "$scopeKey|${nameBuilder}|$qType|$qClass"
+    }
+
+    internal fun extractMinDnsTtlSeconds(dnsResponse: ByteArray): Long {
+        if (dnsResponse.size < 12) return MIN_CACHE_TTL_SECONDS
+        val qdCount = ((dnsResponse[4].toInt() and 0xFF) shl 8) or (dnsResponse[5].toInt() and 0xFF)
+        val anCount = ((dnsResponse[6].toInt() and 0xFF) shl 8) or (dnsResponse[7].toInt() and 0xFF)
+        if (anCount <= 0) return MIN_CACHE_TTL_SECONDS
+
+        var pos = 12
+        repeat(qdCount) {
+            pos = skipDnsName(dnsResponse, pos)
+            if (pos < 0 || pos + 4 > dnsResponse.size) return MIN_CACHE_TTL_SECONDS
+            pos += 4
+        }
+
+        var minTtl = Long.MAX_VALUE
+        repeat(anCount) {
+            pos = skipDnsName(dnsResponse, pos)
+            if (pos < 0 || pos + 10 > dnsResponse.size) return MIN_CACHE_TTL_SECONDS
+            val ttl = ((dnsResponse[pos + 4].toLong() and 0xFF) shl 24) or
+                ((dnsResponse[pos + 5].toLong() and 0xFF) shl 16) or
+                ((dnsResponse[pos + 6].toLong() and 0xFF) shl 8) or
+                (dnsResponse[pos + 7].toLong() and 0xFF)
+            val rdLength = ((dnsResponse[pos + 8].toInt() and 0xFF) shl 8) or (dnsResponse[pos + 9].toInt() and 0xFF)
+            pos += 10
+            if (pos + rdLength > dnsResponse.size) return MIN_CACHE_TTL_SECONDS
+            minTtl = minOf(minTtl, ttl)
+            pos += rdLength
+        }
+        return if (minTtl == Long.MAX_VALUE) MIN_CACHE_TTL_SECONDS else minTtl.coerceAtLeast(MIN_CACHE_TTL_SECONDS)
     }
 
     private suspend fun resolveViaUdpgwWithFallback(
@@ -148,13 +424,27 @@ class DnsManager(
         queryBytes: ByteArray,
         primaryDns: String,
         secondaryDns: String,
-        engine: TunnelEngine
+        engine: TunnelEngine,
+        bypassCache: Boolean = false
     ): DnsResolutionResult = withContext(Dispatchers.IO) {
         val primary = primaryDns.trim().ifBlank { DEFAULT_PRIMARY_DNS }
         val secondary = secondaryDns.trim()
+        val scopeKey = "TCP:$primary:$secondary"
+
+        if (!bypassCache) {
+            lookupCachedResponse(queryBytes, scopeKey)?.let { cached ->
+                return@withContext DnsResolutionResult(
+                    responseBytes = cached,
+                    serverLabel = "$primary:53 (Caché local)",
+                    usedFallback = false,
+                    fromCache = true
+                )
+            }
+        }
 
         val first = resolveViaTunnelTcp(queryBytes, primary, engine)
         if (first != null) {
+            if (!bypassCache) storeCachedResponse(queryBytes, first, scopeKey)
             return@withContext DnsResolutionResult(
                 responseBytes = first,
                 serverLabel = "$primary:53 (TCP)",
@@ -165,6 +455,7 @@ class DnsManager(
         if (secondary.isNotBlank() && secondary != primary) {
             val second = resolveViaTunnelTcp(queryBytes, secondary, engine)
             if (second != null) {
+                if (!bypassCache) storeCachedResponse(queryBytes, second, scopeKey)
                 return@withContext DnsResolutionResult(
                     responseBytes = second,
                     serverLabel = "$secondary:53 (TCP fallback)",
@@ -240,39 +531,51 @@ class DnsManager(
         }
     }
 
+    /**
+     * RFC 8484 DoH POST (application/dns-message) over dedicated OkHttp TLS HTTP/2+HTTP/1.1 client
+     * bridged through [TunnelSocketBridge] with single sequential socket reader & IP SAN validation.
+     */
     suspend fun resolveViaTunnelDohWithDetails(
         queryBytes: ByteArray,
         dnsConfig: ResolvedDnsConfig,
         engine: TunnelEngine,
-        timeoutMs: Long = DNS_QUERY_TIMEOUT_MS
+        timeoutMs: Long = DNS_QUERY_TIMEOUT_MS,
+        bypassCache: Boolean = false
     ): DnsResolutionResult = withContext(Dispatchers.IO) {
-        val target = resolveDohTarget(dnsConfig, engine)
-            ?: return@withContext DnsResolutionResult(
+        val scopeKey = "DOH:${dnsConfig.primaryDns}:${dnsConfig.dohUrl}"
+        if (!bypassCache) {
+            lookupCachedResponse(queryBytes, scopeKey)?.let { cached ->
+                return@withContext DnsResolutionResult(
+                    responseBytes = cached,
+                    serverLabel = "DoH caché local (< 2 ms)",
+                    usedFallback = false,
+                    fromCache = true
+                )
+            }
+        }
+
+        val candidates = resolveDohTargets(dnsConfig, engine)
+        if (candidates.isEmpty()) {
+            return@withContext DnsResolutionResult(
                 responseBytes = null,
                 serverLabel = dnsConfig.dohUrl,
                 errorSummary = "URL DoH inválida o sin resolución IP previa"
             )
-
-        val candidates = buildList {
-            add(target)
-            // Secondary IP fallback when using matching DoH provider or direct IP DoH
-            if (dnsConfig.secondaryDns.isNotBlank() && dnsConfig.secondaryDns != target.connectIp &&
-                isSameDohProvider(target.sniHost, dnsConfig.secondaryDns)
-            ) {
-                add(target.copy(connectIp = dnsConfig.secondaryDns))
-            }
         }
 
+        val client = getOrCreateTunnelDohClient(engine)
         var lastError: String? = null
+
         candidates.forEachIndexed { idx, candidate ->
             try {
                 val resp = withTimeoutOrNull(timeoutMs) {
-                    executeDohOverTunnelStream(queryBytes, candidate, engine)
+                    executeDohOkHttpPost(client, candidate, queryBytes)
                 }
                 if (resp != null && resp.size >= 12) {
+                    if (!bypassCache) storeCachedResponse(queryBytes, resp, scopeKey)
                     return@withContext DnsResolutionResult(
                         responseBytes = resp,
-                        serverLabel = "https://${candidate.hostHeader}${candidate.path} vía ${candidate.connectIp}",
+                        serverLabel = candidate.url,
                         usedFallback = idx > 0
                     )
                 }
@@ -293,66 +596,89 @@ class DnsManager(
 
         DnsResolutionResult(
             responseBytes = null,
-            serverLabel = dnsConfig.dohUrl,
+            serverLabel = candidates.first().url,
             usedFallback = candidates.size > 1,
             errorSummary = lastError ?: "DoH inaccesible dentro del túnel"
         )
     }
 
-    private suspend fun resolveDohTarget(
+    private fun executeDohOkHttpPost(
+        client: OkHttpClient,
+        target: DohEndpointTarget,
+        queryBytes: ByteArray
+    ): ByteArray {
+        val request = Request.Builder()
+            .url(target.url)
+            .header("Accept", DOH_MEDIA_TYPE)
+            .header("Host", target.hostHeader)
+            .post(queryBytes.toRequestBody(DOH_MEDIA_TYPE.toMediaType()))
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("HTTP ${response.code} (${response.message}) desde ${target.url}")
+            }
+            val bodyBytes = response.body?.bytes()
+                ?: throw IOException("Respuesta DoH vacía desde ${target.url}")
+            if (bodyBytes.size < 12) {
+                throw IOException("Respuesta DNS DoH truncada (${bodyBytes.size} bytes)")
+            }
+            return bodyBytes
+        }
+    }
+
+    private suspend fun resolveDohTargets(
         dnsConfig: ResolvedDnsConfig,
         engine: TunnelEngine
-    ): DohEndpointTarget? {
-        val rawUrl = dnsConfig.dohUrl.ifBlank { DEFAULT_DOH_URL }
-        val customDnsSelected = dnsConfig.primaryDns != DEFAULT_PRIMARY_DNS &&
-            dnsConfig.primaryDns != DEFAULT_SECONDARY_DNS
-        val usingUntouchedDefaultDohUrl = rawUrl.equals(DEFAULT_DOH_URL, ignoreCase = true)
+    ): List<DohEndpointTarget> {
+        val rawUrl = dnsConfig.dohUrl.trim().ifBlank { DEFAULT_DOH_URL }
+        val usingDefaultCloudflareUrl = rawUrl.equals(DEFAULT_DOH_URL, ignoreCase = true)
 
-        // If user set custom DNS IP (e.g. 94.140.14.15 or 8.8.8.8) and left default DoH URL untouched,
-        // map to the chosen DNS provider or direct IP so user's DNS choice is always honored.
-        if (customDnsSelected && usingUntouchedDefaultDohUrl) {
-            val mappedHost = WELL_KNOWN_IP_TO_DOH_HOST[dnsConfig.primaryDns]
-            if (mappedHost != null) {
-                val connectIp = WELL_KNOWN_DOH_HOST_TO_IPS[mappedHost]?.firstOrNull() ?: dnsConfig.primaryDns
-                return DohEndpointTarget(
-                    connectIp = connectIp,
+        // When user relies on default DoH URL and sets custom DNS IP (e.g. 94.140.14.15 / 94.140.15.15),
+        // route directly via https://<DNS_IP>/dns-query (RFC 8484 + IP SAN verified) with secondary fallback.
+        if (usingDefaultCloudflareUrl && isValidIpv4(dnsConfig.primaryDns)) {
+            val list = mutableListOf(
+                DohEndpointTarget(
+                    url = "https://${dnsConfig.primaryDns}/dns-query",
+                    connectIp = dnsConfig.primaryDns,
                     port = 443,
-                    sniHost = mappedHost,
-                    hostHeader = mappedHost,
-                    path = "/dns-query"
+                    hostHeader = dnsConfig.primaryDns
+                )
+            )
+            if (isValidIpv4(dnsConfig.secondaryDns) && dnsConfig.secondaryDns != dnsConfig.primaryDns) {
+                list.add(
+                    DohEndpointTarget(
+                        url = "https://${dnsConfig.secondaryDns}/dns-query",
+                        connectIp = dnsConfig.secondaryDns,
+                        port = 443,
+                        hostHeader = dnsConfig.secondaryDns
+                    )
                 )
             }
-            return DohEndpointTarget(
-                connectIp = dnsConfig.primaryDns,
-                port = 443,
-                sniHost = dnsConfig.primaryDns,
-                hostHeader = dnsConfig.primaryDns,
-                path = "/dns-query"
-            )
+            return list
         }
 
-        val uri = runCatching { URI(rawUrl) }.getOrNull() ?: return null
-        val host = uri.host?.takeIf { it.isNotBlank() } ?: return null
+        val uri = runCatching { URI(rawUrl) }.getOrNull() ?: return emptyList()
+        val host = uri.host?.takeIf { it.isNotBlank() } ?: return emptyList()
         val port = if (uri.port in 1..65535) uri.port else 443
         val path = uri.rawPath?.takeIf { it.isNotBlank() } ?: "/dns-query"
         val querySuffix = uri.rawQuery?.let { "?$it" } ?: ""
-        val fullPath = "$path$querySuffix"
+        val fullUrl = "https://$host${if (port == 443) "" else ":$port"}$path$querySuffix"
 
-        val directIp = when {
+        val resolvedIp = when {
             isValidIpv4(host) -> host
-            host.equals("cloudflare-dns.com", ignoreCase = true) &&
-                (dnsConfig.primaryDns == "1.1.1.1" || dnsConfig.primaryDns == "1.0.0.1") -> dnsConfig.primaryDns
             else -> WELL_KNOWN_DOH_HOST_TO_IPS[host.lowercase()]?.firstOrNull()
                 ?: resolveHostnameToIpv4ViaTunnelTcp(host, dnsConfig, engine)
-        } ?: return null
+        } ?: return emptyList()
 
         val hostHeader = if (port == 443) host else "$host:$port"
-        return DohEndpointTarget(
-            connectIp = directIp,
-            port = port,
-            sniHost = host,
-            hostHeader = hostHeader,
-            path = fullPath
+        return listOf(
+            DohEndpointTarget(
+                url = fullUrl,
+                connectIp = resolvedIp,
+                port = port,
+                hostHeader = hostHeader
+            )
         )
     }
 
@@ -366,252 +692,90 @@ class DnsManager(
             queryBytes = query,
             primaryDns = dnsConfig.primaryDns,
             secondaryDns = dnsConfig.secondaryDns,
-            engine = engine
+            engine = engine,
+            bypassCache = true
         ).responseBytes ?: return null
         return extractFirstARecordIp(resp)
     }
 
-    private suspend fun executeDohOverTunnelStream(
-        queryBytes: ByteArray,
-        target: DohEndpointTarget,
-        engine: TunnelEngine
-    ): ByteArray {
-        var stream: TunnelStream? = null
-        try {
-            stream = engine.openTcpTunnel(target.connectIp, target.port)
-            val sslContext = SSLContext.getDefault()
-            val sslEngine = sslContext.createSSLEngine(target.sniHost, target.port).apply {
-                useClientMode = true
-                val params = sslParameters
-                params.endpointIdentificationAlgorithm = "HTTPS"
-                if (!isValidIpv4(target.sniHost)) {
-                    params.serverNames = listOf(SNIHostName(target.sniHost))
-                }
-                sslParameters = params
-            }
+    /**
+     * Measures lightweight TTFB (HTTP HEAD / 204 without body download) over a pooled/warm
+     * tunnel connection, excluding cold SSH channel setup or full JSON body transfers.
+     */
+    suspend fun probeTunnelExitTtfb(
+        engine: TunnelEngine,
+        cachedExitIp: String? = null
+    ): TunnelExitProbeResult? = withContext(Dispatchers.IO) {
+        val client = getOrCreateTunnelProbeClient(engine)
+        val candidates = listOf(
+            "http://cp.cloudflare.com/generate_204",
+            "http://connectivitycheck.gstatic.com/generate_204"
+        )
 
-            performTlsHandshake(sslEngine, stream)
-
-            val httpReq = buildString {
-                append("POST ").append(target.path).append(" HTTP/1.1\r\n")
-                append("Host: ").append(target.hostHeader).append("\r\n")
-                append("Content-Type: application/dns-message\r\n")
-                append("Accept: application/dns-message\r\n")
-                append("Content-Length: ").append(queryBytes.size).append("\r\n")
-                append("Connection: close\r\n\r\n")
-            }.toByteArray(StandardCharsets.ISO_8859_1)
-
-            val fullReq = ByteArray(httpReq.size + queryBytes.size)
-            System.arraycopy(httpReq, 0, fullReq, 0, httpReq.size)
-            System.arraycopy(queryBytes, 0, fullReq, httpReq.size, queryBytes.size)
-
-            val rawResponse = sendAndReceiveTlsApplicationData(sslEngine, stream, fullReq)
-            return parseHttpDnsResponseBody(rawResponse)
-        } finally {
-            runCatching { stream?.close() }
-        }
-    }
-
-    private fun performTlsHandshake(sslEngine: javax.net.ssl.SSLEngine, stream: TunnelStream) {
-        sslEngine.beginHandshake()
-        val session = sslEngine.session
-        var appOut = ByteBuffer.allocate(0)
-        var netOut = ByteBuffer.allocate(session.packetBufferSize.coerceAtLeast(16_384))
-        var netIn = ByteBuffer.allocate(session.packetBufferSize.coerceAtLeast(16_384))
-        var appIn = ByteBuffer.allocate(session.applicationBufferSize.coerceAtLeast(16_384))
-
-        while (true) {
-            when (sslEngine.handshakeStatus) {
-                SSLEngineResult.HandshakeStatus.FINISHED,
-                SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING -> return
-
-                SSLEngineResult.HandshakeStatus.NEED_TASK -> {
-                    var task = sslEngine.delegatedTask
-                    while (task != null) {
-                        task.run()
-                        task = sslEngine.delegatedTask
+        for (probeUrl in candidates) {
+            val result = runCatching {
+                withTimeoutOrNull(4_000L) {
+                    // Warm up connection if pool has no idle socket so TTFB reflects real round-trip latency
+                    if (client.connectionPool.idleConnectionCount() == 0) {
+                        val warmReq = Request.Builder()
+                            .url(probeUrl)
+                            .head()
+                            .header("Connection", "keep-alive")
+                            .build()
+                        runCatching { client.newCall(warmReq).execute().close() }
                     }
-                }
 
-                SSLEngineResult.HandshakeStatus.NEED_WRAP -> {
-                    netOut.clear()
-                    val res = sslEngine.wrap(appOut, netOut)
-                    if (res.status == SSLEngineResult.Status.BUFFER_OVERFLOW) {
-                        netOut = ByteBuffer.allocate(sslEngine.session.packetBufferSize.coerceAtLeast(netOut.capacity() * 2))
-                        continue
-                    }
-                    netOut.flip()
-                    if (netOut.hasRemaining()) {
-                        val bytes = ByteArray(netOut.remaining())
-                        netOut.get(bytes)
-                        stream.outputStream.write(bytes)
-                        stream.outputStream.flush()
-                    }
-                }
-
-                SSLEngineResult.HandshakeStatus.NEED_UNWRAP -> {
-                    netIn.flip()
-                    val res = sslEngine.unwrap(netIn, appIn)
-                    netIn.compact()
-                    when (res.status) {
-                        SSLEngineResult.Status.OK -> Unit
-                        SSLEngineResult.Status.BUFFER_OVERFLOW -> {
-                            appIn = ByteBuffer.allocate(sslEngine.session.applicationBufferSize.coerceAtLeast(appIn.capacity() * 2))
+                    var reqSentNs = 0L
+                    var respFirstByteNs = 0L
+                    val ttfbListener = object : EventListener() {
+                        override fun requestHeadersEnd(call: Call, request: Request) {
+                            reqSentNs = System.nanoTime()
                         }
-                        SSLEngineResult.Status.BUFFER_UNDERFLOW -> {
-                            if (!netIn.hasRemaining()) {
-                                val bigger = ByteBuffer.allocate(netIn.capacity() * 2)
-                                netIn.flip()
-                                bigger.put(netIn)
-                                netIn = bigger
+
+                        override fun responseHeadersStart(call: Call) {
+                            if (respFirstByteNs == 0L) {
+                                respFirstByteNs = System.nanoTime()
                             }
-                            val temp = ByteArray(netIn.remaining().coerceAtMost(8192))
-                            val read = stream.inputStream.read(temp)
-                            if (read == -1) throw EOFException("EOF durante handshake TLS DoH.")
-                            netIn.put(temp, 0, read)
                         }
-                        SSLEngineResult.Status.CLOSED -> throw IOException("Sesión TLS DoH cerrada durante handshake.")
+                    }
+
+                    val ttfbCallClient = client.newBuilder()
+                        .eventListener(ttfbListener)
+                        .build()
+
+                    val req = Request.Builder()
+                        .url(probeUrl)
+                        .head()
+                        .header("Connection", "keep-alive")
+                        .build()
+
+                    val fallbackStartNs = System.nanoTime()
+                    ttfbCallClient.newCall(req).execute().use { resp ->
+                        val fallbackEndNs = System.nanoTime()
+                        if (resp.code !in 100..499) {
+                            throw IOException("HTTP ${resp.code}")
+                        }
+                        val elapsedNs = if (reqSentNs > 0L && respFirstByteNs >= reqSentNs) {
+                            respFirstByteNs - reqSentNs
+                        } else {
+                            fallbackEndNs - fallbackStartNs
+                        }
+                        val ttfbMs = TimeUnit.NANOSECONDS.toMillis(elapsedNs).coerceAtLeast(1L)
+                        TunnelExitProbeResult(
+                            ttfbMs = ttfbMs,
+                            statusCode = resp.code,
+                            endpointLabel = probeUrl,
+                            exitIp = cachedExitIp
+                        )
                     }
                 }
+            }.getOrNull()
 
-                else -> throw IOException("Estado TLS inesperado: ${sslEngine.handshakeStatus}")
+            if (result != null) {
+                return@withContext result
             }
         }
-    }
-
-    private fun sendAndReceiveTlsApplicationData(
-        sslEngine: javax.net.ssl.SSLEngine,
-        stream: TunnelStream,
-        payload: ByteArray
-    ): ByteArray {
-        val appOut = ByteBuffer.wrap(payload)
-        var netOut = ByteBuffer.allocate(sslEngine.session.packetBufferSize.coerceAtLeast(16_384))
-        while (appOut.hasRemaining()) {
-            netOut.clear()
-            val res = sslEngine.wrap(appOut, netOut)
-            if (res.status == SSLEngineResult.Status.BUFFER_OVERFLOW) {
-                netOut = ByteBuffer.allocate(netOut.capacity() * 2)
-                continue
-            }
-            netOut.flip()
-            if (netOut.hasRemaining()) {
-                val outBytes = ByteArray(netOut.remaining())
-                netOut.get(outBytes)
-                stream.outputStream.write(outBytes)
-            }
-        }
-        stream.outputStream.flush()
-
-        val collected = ByteArrayOutputStream()
-        var netIn = ByteBuffer.allocate(sslEngine.session.packetBufferSize.coerceAtLeast(16_384))
-        var appIn = ByteBuffer.allocate(sslEngine.session.applicationBufferSize.coerceAtLeast(16_384))
-        val temp = ByteArray(8192)
-
-        while (true) {
-            val read = stream.inputStream.read(temp)
-            if (read == -1) break
-            if (netIn.remaining() < read) {
-                val bigger = ByteBuffer.allocate((netIn.position() + read).coerceAtLeast(netIn.capacity() * 2))
-                netIn.flip()
-                bigger.put(netIn)
-                netIn = bigger
-            }
-            netIn.put(temp, 0, read)
-
-            var needMoreBytes = false
-            while (!needMoreBytes) {
-                netIn.flip()
-                appIn.clear()
-                val res = sslEngine.unwrap(netIn, appIn)
-                netIn.compact()
-                appIn.flip()
-                if (appIn.hasRemaining()) {
-                    val chunk = ByteArray(appIn.remaining())
-                    appIn.get(chunk)
-                    collected.write(chunk)
-                }
-                when (res.status) {
-                    SSLEngineResult.Status.OK -> {
-                        if (netIn.position() == 0) needMoreBytes = true
-                    }
-                    SSLEngineResult.Status.BUFFER_OVERFLOW -> {
-                        appIn = ByteBuffer.allocate(sslEngine.session.applicationBufferSize.coerceAtLeast(appIn.capacity() * 2))
-                    }
-                    SSLEngineResult.Status.BUFFER_UNDERFLOW -> {
-                        needMoreBytes = true
-                    }
-                    SSLEngineResult.Status.CLOSED -> {
-                        return collected.toByteArray()
-                    }
-                }
-            }
-            if (isCompleteHttpResponse(collected.toByteArray())) break
-        }
-        return collected.toByteArray()
-    }
-
-    private fun isCompleteHttpResponse(raw: ByteArray): Boolean {
-        val sepIdx = indexOfCrlfCrlf(raw)
-        if (sepIdx < 0) return false
-        val headerStr = String(raw, 0, sepIdx, StandardCharsets.ISO_8859_1)
-        val contentLength = headerStr.lines()
-            .firstOrNull { it.lowercase().startsWith("content-length:") }
-            ?.substringAfter(':')
-            ?.trim()
-            ?.toIntOrNull()
-        if (contentLength != null) {
-            return raw.size >= sepIdx + 4 + contentLength
-        }
-        if (headerStr.lowercase().contains("transfer-encoding: chunked")) {
-            val bodyBytes = raw.copyOfRange(sepIdx + 4, raw.size)
-            val bodyText = String(bodyBytes, StandardCharsets.ISO_8859_1)
-            return bodyText.contains("\r\n0\r\n\r\n") || bodyText.startsWith("0\r\n\r\n")
-        }
-        return false
-    }
-
-    private fun decodeHttpBody(raw: ByteArray): ByteArray {
-        val sepIdx = indexOfCrlfCrlf(raw)
-        if (sepIdx < 0) throw IOException("Respuesta HTTP incompleta")
-        val headerStr = String(raw, 0, sepIdx, StandardCharsets.ISO_8859_1)
-        val lines = headerStr.lines()
-        val statusLine = lines.firstOrNull().orEmpty()
-        val statusCode = statusLine.split(' ').getOrNull(1)?.toIntOrNull() ?: -1
-        if (statusCode !in 200..299) {
-            throw IOException("HTTP $statusCode ($statusLine)")
-        }
-        val bodyStart = sepIdx + 4
-        val contentLength = lines
-            .firstOrNull { it.lowercase().startsWith("content-length:") }
-            ?.substringAfter(':')
-            ?.trim()
-            ?.toIntOrNull()
-        if (contentLength != null && raw.size >= bodyStart + contentLength) {
-            return raw.copyOfRange(bodyStart, bodyStart + contentLength)
-        }
-        val isChunked = lines.any { it.lowercase().contains("transfer-encoding: chunked") }
-        val bodyRaw = raw.copyOfRange(bodyStart, raw.size)
-        return if (isChunked) decodeChunkedBody(bodyRaw) else bodyRaw
-    }
-
-    private fun parseHttpDnsResponseBody(raw: ByteArray): ByteArray = decodeHttpBody(raw)
-
-    private fun decodeChunkedBody(chunked: ByteArray): ByteArray {
-        val out = ByteArrayOutputStream()
-        var pos = 0
-        while (pos < chunked.size) {
-            val lineEnd = indexOfCrlf(chunked, pos)
-            if (lineEnd < 0) break
-            val sizeHex = String(chunked, pos, lineEnd - pos, StandardCharsets.ISO_8859_1)
-                .substringBefore(';').trim()
-            val chunkSize = sizeHex.toIntOrNull(16) ?: break
-            pos = lineEnd + 2
-            if (chunkSize == 0) break
-            val available = (chunked.size - pos).coerceAtMost(chunkSize)
-            out.write(chunked, pos, available)
-            pos += available + 2
-        }
-        return out.toByteArray()
+        null
     }
 
     /**
@@ -622,8 +786,8 @@ class DnsManager(
         return runCatching {
             val request = Request.Builder()
                 .url(url)
-                .header("Accept", "application/dns-message")
-                .post(queryBytes.toRequestBody("application/dns-message".toMediaType()))
+                .header("Accept", DOH_MEDIA_TYPE)
+                .post(queryBytes.toRequestBody(DOH_MEDIA_TYPE.toMediaType()))
                 .build()
             protectedHttpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
@@ -696,11 +860,30 @@ class DnsManager(
 
     /**
      * Queries public exit IP + country/city through the active TunnelEngine.
-     * Tries ip-api.com (HTTP), then ipwho.is (HTTPS over tunnel), then api.ipify.org (HTTP).
+     * Uses pooled HTTP client over [TunnelSocketBridge] or fallback direct TCP stream.
      */
     suspend fun fetchExitIpInfoThroughTunnel(engine: TunnelEngine): ExitIpInfo? = withContext(Dispatchers.IO) {
+        val probeClient = getOrCreateTunnelProbeClient(engine)
+
         val fromIpApi = runCatching {
-            withTimeoutOrNull(5_000L) {
+            withTimeoutOrNull(4_500L) {
+                val req = Request.Builder()
+                    .url("http://ip-api.com/json/?fields=status,country,countryCode,city,query")
+                    .header("Accept", "application/json")
+                    .header("User-Agent", "AIOTunnelVPN/1.0")
+                    .build()
+                probeClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    val body = resp.body?.string() ?: return@use null
+                    parseIpApiJson(body)
+                }
+            }
+        }.getOrNull()
+        if (fromIpApi != null) return@withContext fromIpApi
+
+        // Direct fallback for lightweight mock engines in unit tests that return raw HTTP over openTcpTunnel
+        val fromDirectIpApi = runCatching {
+            withTimeoutOrNull(4_000L) {
                 engine.openTcpTunnel("ip-api.com", 80).use { stream ->
                     val req = "GET /json/?fields=status,country,countryCode,city,query HTTP/1.1\r\n" +
                         "Host: ip-api.com\r\n" +
@@ -715,28 +898,33 @@ class DnsManager(
                 }
             }
         }.getOrNull()
-        if (fromIpApi != null) return@withContext fromIpApi
+        if (fromDirectIpApi != null) return@withContext fromDirectIpApi
 
         val fromIpWho = runCatching {
-            withTimeoutOrNull(5_500L) {
-                executeHttpsGetOverTunnelStream(
-                    host = "ipwho.is",
-                    port = 443,
-                    path = "/",
-                    engine = engine
-                )?.let { parseIpWhoJson(it) }
+            withTimeoutOrNull(5_000L) {
+                val req = Request.Builder()
+                    .url("https://ipwho.is/")
+                    .header("Accept", "application/json")
+                    .header("User-Agent", "AIOTunnelVPN/1.0")
+                    .build()
+                probeClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    val body = resp.body?.string() ?: return@use null
+                    parseIpWhoJson(body)
+                }
             }
         }.getOrNull()
         if (fromIpWho != null) return@withContext fromIpWho
 
         val ipOnly = runCatching {
             withTimeoutOrNull(4_000L) {
-                engine.openTcpTunnel("api.ipify.org", 80).use { stream ->
-                    val req = "GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\nUser-Agent: AIOTunnelVPN/1.0\r\n\r\n"
-                    stream.outputStream.write(req.toByteArray(StandardCharsets.US_ASCII))
-                    stream.outputStream.flush()
-                    val raw = stream.inputStream.readBytes()
-                    val body = String(decodeHttpBody(raw), StandardCharsets.UTF_8).trim()
+                val req = Request.Builder()
+                    .url("http://api.ipify.org/")
+                    .header("User-Agent", "AIOTunnelVPN/1.0")
+                    .build()
+                probeClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    val body = resp.body?.string()?.trim().orEmpty()
                     if (isValidIpLiteral(body)) body else null
                 }
             }
@@ -744,43 +932,30 @@ class DnsManager(
         ipOnly?.let { ExitIpInfo(ip = it) }
     }
 
-    /**
-     * Queries public exit IP through the active TunnelEngine over HTTP/1.1.
-     */
     suspend fun fetchExitIpThroughTunnel(engine: TunnelEngine): String? =
         fetchExitIpInfoThroughTunnel(engine)?.ip
 
-    private suspend fun executeHttpsGetOverTunnelStream(
-        host: String,
-        port: Int,
-        path: String,
-        engine: TunnelEngine
-    ): String? {
-        var stream: TunnelStream? = null
-        try {
-            stream = engine.openTcpTunnel(host, port)
-            val sslContext = SSLContext.getDefault()
-            val sslEngine = sslContext.createSSLEngine(host, port).apply {
-                useClientMode = true
-                val params = sslParameters
-                params.endpointIdentificationAlgorithm = "HTTPS"
-                params.serverNames = listOf(SNIHostName(host))
-                sslParameters = params
-            }
-            performTlsHandshake(sslEngine, stream)
-            val httpReq = buildString {
-                append("GET ").append(path).append(" HTTP/1.1\r\n")
-                append("Host: ").append(host).append("\r\n")
-                append("Accept: application/json\r\n")
-                append("Connection: close\r\n")
-                append("User-Agent: AIOTunnelVPN/1.0\r\n\r\n")
-            }.toByteArray(StandardCharsets.ISO_8859_1)
-            val rawResponse = sendAndReceiveTlsApplicationData(sslEngine, stream, httpReq)
-            val body = decodeHttpBody(rawResponse)
-            return String(body, StandardCharsets.UTF_8)
-        } finally {
-            runCatching { stream?.close() }
+    private fun decodeHttpBody(raw: ByteArray): ByteArray {
+        val sepIdx = indexOfCrlfCrlf(raw)
+        if (sepIdx < 0) throw IOException("Respuesta HTTP incompleta")
+        val headerStr = String(raw, 0, sepIdx, StandardCharsets.ISO_8859_1)
+        val lines = headerStr.lines()
+        val statusLine = lines.firstOrNull().orEmpty()
+        val statusCode = statusLine.split(' ').getOrNull(1)?.toIntOrNull() ?: -1
+        if (statusCode !in 200..299) {
+            throw IOException("HTTP $statusCode ($statusLine)")
         }
+        val bodyStart = sepIdx + 4
+        val contentLength = lines
+            .firstOrNull { it.lowercase().startsWith("content-length:") }
+            ?.substringAfter(':')
+            ?.trim()
+            ?.toIntOrNull()
+        if (contentLength != null && raw.size >= bodyStart + contentLength) {
+            return raw.copyOfRange(bodyStart, bodyStart + contentLength)
+        }
+        val bodyRaw = raw.copyOfRange(bodyStart, raw.size)
+        return bodyRaw
     }
 
     fun buildSampleDnsQuery(domain: String = "example.com"): ByteArray {
@@ -820,7 +995,7 @@ class DnsManager(
         repeat(qdCount) {
             pos = skipDnsName(dnsResponse, pos)
             if (pos < 0 || pos + 4 > dnsResponse.size) return null
-            pos += 4 // QTYPE + QCLASS
+            pos += 4
         }
 
         repeat(anCount) {
@@ -872,21 +1047,13 @@ class DnsManager(
         return -1
     }
 
-    private fun indexOfCrlf(data: ByteArray, start: Int): Int {
-        for (i in start..(data.size - 2)) {
-            if (data[i] == '\r'.code.toByte() && data[i + 1] == '\n'.code.toByte()) return i
-        }
-        return -1
-    }
-
-    private fun isSameDohProvider(sniHost: String, secondaryIp: String): Boolean {
-        val mapped = WELL_KNOWN_IP_TO_DOH_HOST[secondaryIp] ?: return false
-        return mapped.equals(sniHost, ignoreCase = true)
-    }
-
     companion object {
         private const val TAG = "DnsManager"
+        private const val DOH_MEDIA_TYPE = "application/dns-message"
         const val DNS_QUERY_TIMEOUT_MS = 2_500L
+        const val MIN_CACHE_TTL_SECONDS = 60L
+        const val MAX_CACHE_TTL_SECONDS = 3_600L
+        const val MAX_DNS_CACHE_ENTRIES = 512
         const val DEFAULT_PRIMARY_DNS = "1.1.1.1"
         const val DEFAULT_SECONDARY_DNS = "1.0.0.1"
         const val DEFAULT_DOH_URL = "https://cloudflare-dns.com/dns-query"
@@ -907,10 +1074,76 @@ class DnsManager(
         private val WELL_KNOWN_DOH_HOST_TO_IPS = mapOf(
             "cloudflare-dns.com" to listOf("1.1.1.1", "1.0.0.1"),
             "dns.google" to listOf("8.8.8.8", "8.8.4.4"),
-            "dns.adguard-dns.com" to listOf("94.140.14.140", "94.140.14.141"),
-            "dns.adguard.com" to listOf("94.140.14.140", "94.140.14.141"),
+            "dns.adguard-dns.com" to listOf("94.140.14.15", "94.140.15.15"),
+            "dns.adguard.com" to listOf("94.140.14.15", "94.140.15.15"),
             "dns.quad9.net" to listOf("9.9.9.9", "149.112.112.112")
         )
+
+        private val WELL_KNOWN_PROBE_HOST_TO_IPS = mapOf(
+            "cp.cloudflare.com" to listOf("1.1.1.1", "1.0.0.1"),
+            "connectivitycheck.gstatic.com" to listOf("142.250.190.99"),
+            "api.ipify.org" to listOf("104.26.13.205")
+        )
+
+        /**
+         * Verifies TLS hostname or IP SAN (e.g. 94.140.14.15 / 94.140.15.15 / 1.1.1.1)
+         * after X.509 CA chain validation has succeeded.
+         */
+        fun verifyDohHostnameOrIpSan(hostOrIp: String, session: SSLSession): Boolean {
+            val clean = hostOrIp.trim().removePrefix("[").substringBefore("]")
+            if (clean.isEmpty()) return false
+
+            if (runCatching { HttpsURLConnection.getDefaultHostnameVerifier().verify(clean, session) }.getOrDefault(false)) {
+                return true
+            }
+
+            val leaf = runCatching { session.peerCertificates.firstOrNull() as? X509Certificate }.getOrNull()
+                ?: return false
+
+            val sans = runCatching { leaf.subjectAlternativeNames }.getOrNull().orEmpty()
+            if (isValidIpv4(clean)) {
+                val targetBytes = runCatching { InetAddress.getByName(clean).address }.getOrNull()
+                val ipMatched = sans.any { entry ->
+                    val type = entry.getOrNull(0) as? Int
+                    val value = entry.getOrNull(1) as? String
+                    if (type == 7 && value != null && targetBytes != null) {
+                        runCatching { InetAddress.getByName(value).address.contentEquals(targetBytes) }.getOrDefault(false)
+                    } else {
+                        false
+                    }
+                }
+                if (ipMatched) return true
+
+                // If a trusted CA certificate for a known DoH IP only lists its DNS SAN (e.g. dns.adguard-dns.com)
+                val mappedDnsHost = WELL_KNOWN_IP_TO_DOH_HOST[clean]
+                if (mappedDnsHost != null) {
+                    return sans.any { entry ->
+                        val type = entry.getOrNull(0) as? Int
+                        val value = entry.getOrNull(1) as? String
+                        type == 2 && value != null && matchesDnsName(mappedDnsHost, value)
+                    }
+                }
+            } else {
+                val dnsMatched = sans.any { entry ->
+                    val type = entry.getOrNull(0) as? Int
+                    val value = entry.getOrNull(1) as? String
+                    type == 2 && value != null && matchesDnsName(clean, value)
+                }
+                if (dnsMatched) return true
+            }
+            return false
+        }
+
+        private fun matchesDnsName(host: String, pattern: String): Boolean {
+            val h = host.lowercase()
+            val p = pattern.lowercase()
+            if (h == p) return true
+            if (p.startsWith("*.")) {
+                val suffix = p.substring(1) // ".domain.com"
+                return h.endsWith(suffix) && h.indexOf('.') == h.length - suffix.length
+            }
+            return false
+        }
 
         @Serializable
         private data class IpApiResponse(

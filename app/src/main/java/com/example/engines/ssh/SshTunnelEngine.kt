@@ -153,6 +153,8 @@ class SshTunnelEngine(
                             timeoutMs = timeoutMs
                         )
                     )
+                } else {
+                    session.setSocketFactory(TcpNoDelaySocketFactory(timeoutMs))
                 }
                 if (profile.authMethod == SshAuthMethod.PASSWORD) {
                     session.setPassword(secrets.password.toByteArray(StandardCharsets.UTF_8))
@@ -289,6 +291,8 @@ class SshTunnelEngine(
         val config = Properties()
         config["StrictHostKeyChecking"] = "yes"
         config["PreferredAuthentications"] = "publickey,password,keyboard-interactive"
+        config["compression.s2c"] = "none"
+        config["compression.c2s"] = "none"
         session.setConfig(config)
         session.userInfo = object : UserInfo {
             override fun getPassphrase(): String? = null
@@ -444,6 +448,24 @@ class SshTunnelEngine(
 
         override fun getInputStream(socket: Socket): InputStream =
             synchronized(bufferedInputs) { bufferedInputs[socket] } ?: socket.getInputStream()
+
+        override fun getOutputStream(socket: Socket): OutputStream = socket.getOutputStream()
+    }
+
+    private class TcpNoDelaySocketFactory(
+        private val timeoutMs: Int
+    ) : SocketFactory {
+        override fun createSocket(host: String?, port: Int): Socket {
+            val socket = Socket()
+            socket.tcpNoDelay = true
+            socket.keepAlive = true
+            runCatching { socket.receiveBufferSize = SOCKET_BUFFER_BYTES }
+            runCatching { socket.sendBufferSize = SOCKET_BUFFER_BYTES }
+            socket.connect(InetSocketAddress(host ?: "127.0.0.1", port), timeoutMs)
+            return socket
+        }
+
+        override fun getInputStream(socket: Socket): InputStream = socket.getInputStream()
 
         override fun getOutputStream(socket: Socket): OutputStream = socket.getOutputStream()
     }
