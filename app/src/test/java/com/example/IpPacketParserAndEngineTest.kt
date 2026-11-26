@@ -80,18 +80,18 @@ class IpPacketParserAndEngineTest {
     }
 
     @Test
-    fun `http connect engine rejects crlf header injection and invalid ports`() = runTest {
+    fun `http raw engine accepts raw crlf payloads without header validation errors and rejects invalid ports`() = runTest {
         val engine = HttpConnectProxyEngine()
-        val badHeaderProfile = TunnelProfile(
-            name = "Bad Header",
+        val rawPayloadProfile = TunnelProfile(
+            name = "Raw Payload",
             protocol = TunnelProtocol.HTTPS_PROXY,
             host = "proxy.example.com",
             port = 443,
-            customConnectHeaders = mapOf("User-Agent" to "Evil\r\nX-Injected: 1")
+            rawHttpPayload = "HEAD / HTTP/1.1[crlf]Host: [host][crlf][crlf][split]GET- / HTTP/1.1[crlf]X-Test: a\r\nb[crlf][crlf]"
         )
-        assertTrue(engine.validateConfiguration(badHeaderProfile, ProfileSecrets()).isFailure)
+        assertTrue(engine.validateConfiguration(rawPayloadProfile, ProfileSecrets()).isSuccess)
 
-        val badPortProfile = badHeaderProfile.copy(port = 0, customConnectHeaders = emptyMap())
+        val badPortProfile = rawPayloadProfile.copy(port = 0)
         assertTrue(engine.validateConfiguration(badPortProfile, ProfileSecrets()).isFailure)
     }
 

@@ -30,10 +30,7 @@ data class TunnelProfile(
     val tlsServerName: String = "",
     val tlsAlpn: String = "http/1.1",
     val verifyTlsCertificate: Boolean = true,
-    val httpRequestMethod: String = "CONNECT",
-    val httpRequestPath: String = "/",
-    val upgradeWebSocket: Boolean = false,
-    val customConnectHeaders: Map<String, String> = emptyMap(),
+    val rawHttpPayload: String = "",
     // DNS & Routing
     val dnsMode: DnsMode = DnsMode.DNS_OVER_HTTPS,
     val useCustomDns: Boolean = false,

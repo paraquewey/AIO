@@ -56,6 +56,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -121,14 +122,7 @@ fun ProfileEditorScreen(
     }
     var tlsSni by remember { mutableStateOf(existingProfile?.tlsServerName ?: "") }
     var verifyTls by remember { mutableStateOf(existingProfile?.verifyTlsCertificate ?: true) }
-    var httpMethod by remember { mutableStateOf(existingProfile?.httpRequestMethod ?: "CONNECT") }
-    var httpPath by remember { mutableStateOf(existingProfile?.httpRequestPath ?: "/") }
-    var upgradeWebSocket by remember { mutableStateOf(existingProfile?.upgradeWebSocket ?: false) }
-    var customHeadersRaw by remember {
-        mutableStateOf(
-            existingProfile?.customConnectHeaders?.entries?.joinToString("\n") { "${it.key}: ${it.value}" } ?: ""
-        )
-    }
+    var rawHttpPayload by remember { mutableStateOf(existingProfile?.rawHttpPayload ?: "") }
 
     var dnsMode by remember { mutableStateOf(existingProfile?.dnsMode ?: appSettings.defaultDnsMode) }
     var dnsServer by remember {
@@ -198,13 +192,6 @@ fun ProfileEditorScreen(
                                 validationError = "El MTU debe estar entre 1200 y 9000."
                                 return@Button
                             }
-                            val headersMap = customHeadersRaw.lines()
-                                .mapNotNull { line ->
-                                    val idx = line.indexOf(':')
-                                    if (idx <= 0) null
-                                    else line.substring(0, idx).trim() to line.substring(idx + 1).trim()
-                                }
-                                .toMap()
                             val tags = tagsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
                             val cleanDns1 = dnsServer.trim().ifBlank { appSettings.defaultDnsServer.ifBlank { "1.1.1.1" } }
                             val cleanDns2 = dnsServerSecondary.trim().ifBlank { appSettings.defaultDnsServerSecondary.ifBlank { "1.0.0.1" } }
@@ -221,6 +208,8 @@ fun ProfileEditorScreen(
                                 cleanDns1 != appSettings.defaultDnsServer ||
                                 cleanDns2 != appSettings.defaultDnsServerSecondary ||
                                 cleanDoh != appSettings.defaultDohUrl
+                            val hasWebSocketUpgrade = rawHttpPayload.contains("upgrade:", ignoreCase = true) &&
+                                rawHttpPayload.contains("websocket", ignoreCase = true)
                             val profile = TunnelProfile(
                                 id = existingProfile?.id ?: UUID.randomUUID().toString(),
                                 name = name.trim(),
@@ -234,14 +223,11 @@ fun ProfileEditorScreen(
                                 jumpPort = parsedJumpPort,
                                 jumpUsername = jumpUser.trim(),
                                 jumpAuthMethod = jumpAuthMethod,
-                                transport = if (upgradeWebSocket) TransportType.WEBSOCKET else transport,
+                                transport = if (hasWebSocketUpgrade) TransportType.WEBSOCKET else transport,
                                 tlsEnabled = tlsEnabled || protocol == TunnelProtocol.HTTPS_PROXY,
                                 tlsServerName = tlsSni.trim(),
                                 verifyTlsCertificate = verifyTls,
-                                httpRequestMethod = httpMethod.trim().uppercase().ifBlank { "CONNECT" },
-                                httpRequestPath = httpPath.trim().ifBlank { "/" },
-                                upgradeWebSocket = upgradeWebSocket,
-                                customConnectHeaders = headersMap,
+                                rawHttpPayload = rawHttpPayload,
                                 dnsMode = dnsMode,
                                 useCustomDns = isCustomDns,
                                 dnsServer = cleanDns1,
@@ -553,9 +539,9 @@ fun ProfileEditorScreen(
                     }
                 }
 
-                // TLS, Transport & Allowed HTTP CONNECT Headers
+                // TLS, Transport & Raw HTTP / WebSocket Payload
                 GlassCard {
-                    Text("TLS, transporte y encabezados", style = MaterialTheme.typography.titleMedium, color = GruvboxAqua)
+                    Text("TLS, transporte y Payload", style = MaterialTheme.typography.titleMedium, color = GruvboxAqua)
                     Spacer(Modifier.height(8.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -582,48 +568,32 @@ fun ProfileEditorScreen(
                             )
                         }
                     }
-                    if (protocol == TunnelProtocol.HTTP_PROXY || protocol == TunnelProtocol.HTTPS_PROXY) {
-                        Spacer(Modifier.height(8.dp))
-                        Text("Método de payload HTTP", style = MaterialTheme.typography.labelLarge)
-                        Spacer(Modifier.height(4.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            listOf("CONNECT", "GET", "HEAD", "POST", "PUT").forEach { m ->
-                                FilterChip(
-                                    selected = httpMethod.equals(m, ignoreCase = true),
-                                    onClick = { httpMethod = m },
-                                    label = { Text(m) }
-                                )
-                            }
-                        }
-                        if (!httpMethod.equals("CONNECT", ignoreCase = true)) {
-                            Spacer(Modifier.height(6.dp))
-                            OutlinedTextField(
-                                value = httpPath,
-                                onValueChange = { httpPath = it },
-                                label = { Text("Ruta HTTP del payload (ej. / o /ws)") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Encabezados Upgrade: websocket")
-                            Switch(checked = upgradeWebSocket, onCheckedChange = { upgradeWebSocket = it })
-                        }
-                        Spacer(Modifier.height(6.dp))
+                    if (protocol == TunnelProtocol.HTTP_PROXY ||
+                        protocol == TunnelProtocol.HTTPS_PROXY ||
+                        protocol == TunnelProtocol.SSH ||
+                        protocol == TunnelProtocol.SSH_JUMP
+                    ) {
+                        Spacer(Modifier.height(10.dp))
                         OutlinedTextField(
-                            value = customHeadersRaw,
-                            onValueChange = { customHeadersRaw = it },
-                            label = { Text("Encabezados HTTP personalizados (ej. Host: ..., User-Agent: ...)") },
-                            minLines = 2,
-                            maxLines = 4,
-                            modifier = Modifier.fillMaxWidth()
+                            value = rawHttpPayload,
+                            onValueChange = { rawHttpPayload = it },
+                            label = { Text("Payload HTTP / WebSocket (Crudo)") },
+                            placeholder = {
+                                Text("Ej: GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf][crlf][split]")
+                            },
+                            supportingText = {
+                                Text(
+                                    "Acepta peticiones múltiples y macros: [crlf] [lf] [cr] [lfcr] [host] [port] [host_port] [ip] [ssh] [raw] [real_raw] [netData] [auth] [ua] [rotate=a;b] [random=a;b] [split] [instant_split] [splitNoDelay] [delay_split] [split_delay=X]",
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            },
+                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            singleLine = false,
+                            minLines = 6,
+                            maxLines = 14,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("editor_raw_payload_input")
                         )
                     }
                 }

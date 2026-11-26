@@ -1,11 +1,18 @@
 # Changelog — AIO Tunnel VPN
 
+## [1.2.0] - 2026-11-26
+### Refactorización de Payload Crudo y Sockets TCP/TLS
+- Reemplazados los selectores rígidos de método/ruta/encabezados en **Editar perfil** por un campo multilínea sin restricciones **"Payload HTTP / WebSocket (Crudo)"**.
+- Eliminada por completo la validación restrictiva `"Encabezado HTTP inválido (CRLF o espacio en clave detectado)"`.
+- Nuevo motor parser `RawPayloadParser` y ejecutor de socket crudo `RawTcpPayloadExecutor` (`Socket` / `SSLSocket`) con soporte completo para `[crlf]`, `[lf]`, `[cr]`, `[lfcr]`, `[host]`, `[port]`, `[host_port]`, `[ip]`, `[ssh]`, `[protocol]`, `[method]`, `[netData]`, `[raw]`, `[real_raw]`, `[auth]`, `[ua]`, `[rotate=...]`, `[random=...]`, y fragmentación TCP (`[split]`, `[instant_split]`, `[splitNoDelay]`, `[delay_split]`, `[split_delay=X]`).
+- Integrado el handshake de payload crudo tanto en `HttpConnectProxyEngine` como en `SshTunnelEngine` (para túneles SSH sobre HTTP/WebSocket o TLS directo), manteniendo conexión directa sin inyección cuando el payload está vacío.
+- Migración de base de datos Room v2 -> v3 (`MIGRATION_2_3`) añadiendo `rawHttpPayload`.
+
 ## [1.1.0] - 2026-11-26
 ### Mejorado y Corregido
 - Soporte dinámico de **Servidor DNS 1 (Primario)** y **Servidor DNS 2 (Secundario)** en Editar Perfil, Ajustes y `AioVpnService` (con herencia automática de Ajustes y respaldo automático DNS 1 -> DNS 2).
 - Enrutamiento DNS obligatorio **por dentro del túnel activo** mediante **DNS-over-HTTPS** sobre túnel TLS o **DNS-over-TCP** (prefijo de 2 bytes RFC 1035), eliminando el uso de UDP directo/protegido para consultas de usuario.
 - Timeout estricto por consulta DNS (2500 ms), cancelación limpia al detener la VPN y limitación de frecuencia en `AppLogger` para evitar saturación de registros.
-- Soporte completo en `HttpConnectProxyEngine` para métodos HTTP (`CONNECT`, `GET`, `HEAD`, `POST`, `PUT`) y encabezados `Upgrade: websocket` (`101 Switching Protocols`).
 - Diagnóstico separado según estado de la VPN: pruebas DNS/DoH por dentro del túnel cuando está conectado, y validación de endpoint respetando `tlsEnabled` cuando está desconectado.
 
 ## [1.0.0] - 2026-11-25

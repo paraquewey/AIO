@@ -469,11 +469,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             onSuccess = { (latency, statusLine) ->
                                 profileRepo.updateLatency(activeProfile.id, latency)
                                 val modeTag = if (useTls) "TLS + HTTP" else "TCP + HTTP (sin TLS)"
+                                val payloadTag = if (activeProfile.rawHttpPayload.isBlank()) "directo" else "Payload crudo"
                                 DiagnosticCheckResult(
                                     id = "server_probe",
                                     title = "Endpoint ${activeProfile.host}:${activeProfile.port}",
                                     status = DiagnosticStatus.PASSED,
-                                    summary = "$modeTag (${activeProfile.httpRequestMethod}) -> $statusLine",
+                                    summary = "$modeTag ($payloadTag) -> $statusLine",
                                     latencyMs = latency,
                                     timestampMillis = System.currentTimeMillis()
                                 )

@@ -69,6 +69,7 @@ class AioRobolectricUiTest {
 
         composeRule.onNodeWithTag("editor_name_input").performTextInput("Test Proxy")
         composeRule.onNodeWithTag("editor_host_input").performTextInput("proxy.example.org")
+        composeRule.onNodeWithTag("editor_raw_payload_input").performScrollTo().performTextInput("HEAD / HTTP/1.1[crlf]Host: [host][crlf][crlf][split]")
         composeRule.onNodeWithTag("editor_dns1_input").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("editor_dns2_input").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("editor_save_button").performClick()
@@ -84,12 +85,13 @@ class AioRobolectricUiTest {
     }
 
     @Test
-    fun `room database persists and queries tunnel profiles with secondary dns and http method`() = runTest {
+    fun `room database persists and queries tunnel profiles with secondary dns and raw payload`() = runTest {
         val db = Room.inMemoryDatabaseBuilder(
             ApplicationProvider.getApplicationContext(),
             AioDatabase::class.java
         ).allowMainThreadQueries().build()
 
+        val samplePayload = "GET /ws HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf][crlf][split]"
         val profile = TunnelProfile(
             name = "Room Check",
             protocol = TunnelProtocol.HTTP_PROXY,
@@ -98,9 +100,7 @@ class AioRobolectricUiTest {
             useCustomDns = true,
             dnsServer = "94.140.14.15",
             dnsServerSecondary = "94.140.15.15",
-            httpRequestMethod = "GET",
-            httpRequestPath = "/ws",
-            upgradeWebSocket = true
+            rawHttpPayload = samplePayload
         )
         db.tunnelProfileDao().upsert(profile.toEntity())
         val loaded = db.tunnelProfileDao().getById(profile.id)?.toDomain()
@@ -108,13 +108,12 @@ class AioRobolectricUiTest {
         assertEquals(TunnelProtocol.HTTP_PROXY, loaded?.protocol)
         assertEquals("94.140.14.15", loaded?.dnsServer)
         assertEquals("94.140.15.15", loaded?.dnsServerSecondary)
-        assertEquals("GET", loaded?.httpRequestMethod)
-        assertEquals(true, loaded?.upgradeWebSocket)
+        assertEquals(samplePayload, loaded?.rawHttpPayload)
         db.close()
     }
 
     @Test
-    fun `room migration 1 to 2 adds secondary dns and http payload columns without data loss`() {
+    fun `room migration 1 to 2 to 3 preserves profiles and adds rawHttpPayload column`() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val dbName = "migration_test_${System.nanoTime()}.db"
         val factory = FrameworkSQLiteOpenHelperFactory()
@@ -181,13 +180,13 @@ class AioRobolectricUiTest {
         )
         helper.writableDatabase.use { v1Db ->
             AioDatabase.MIGRATION_1_2.migrate(v1Db)
-            v1Db.query("SELECT dnsServer, dnsServerSecondary, httpRequestMethod, upgradeWebSocket FROM tunnel_profiles WHERE id = 'legacy-1'")
+            AioDatabase.MIGRATION_2_3.migrate(v1Db)
+            v1Db.query("SELECT dnsServer, dnsServerSecondary, rawHttpPayload FROM tunnel_profiles WHERE id = 'legacy-1'")
                 .use { cursor ->
                     assertEquals(true, cursor.moveToFirst())
                     assertEquals("94.140.14.15", cursor.getString(0))
                     assertEquals("1.0.0.1", cursor.getString(1))
-                    assertEquals("CONNECT", cursor.getString(2))
-                    assertEquals(0, cursor.getInt(3))
+                    assertEquals("", cursor.getString(2))
                 }
         }
         context.deleteDatabase(dbName)

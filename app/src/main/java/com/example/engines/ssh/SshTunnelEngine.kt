@@ -14,6 +14,7 @@ import com.example.engines.adapter.EngineContext
 import com.example.engines.adapter.EngineStatus
 import com.example.engines.adapter.TunnelEngine
 import com.example.engines.adapter.TunnelStream
+import com.example.engines.http.RawTcpPayloadExecutor
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.HostKey
 import com.jcraft.jsch.HostKeyRepository
@@ -27,12 +28,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import java.io.BufferedInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import java.util.IdentityHashMap
 import java.util.Properties
 
 class SshTunnelEngine(
@@ -107,7 +110,7 @@ class SshTunnelEngine(
                         )
                     }
                     val jSession = jumpJsch.getSession(profile.jumpUsername, profile.jumpHost, profile.jumpPort)
-                    jSession.setSocketFactory(ProtectedSocketFactory(ctx.protectSocket))
+                    jSession.setSocketFactory(ProtectedSocketFactory(ctx.protectSocket, profile, secrets, applyPayload = false))
                     if (profile.jumpAuthMethod == SshAuthMethod.PASSWORD) {
                         jSession.setPassword(secrets.jumpPassword)
                     }
@@ -132,7 +135,14 @@ class SshTunnelEngine(
                 val targetPort = if (useJump) forwardedLocalPort else profile.port
                 val session = jsch.getSession(profile.username, targetHost, targetPort)
                 if (!useJump) {
-                    session.setSocketFactory(ProtectedSocketFactory(ctx.protectSocket))
+                    session.setSocketFactory(
+                        ProtectedSocketFactory(
+                            protectSocket = ctx.protectSocket,
+                            profile = profile,
+                            secrets = secrets,
+                            applyPayload = profile.rawHttpPayload.isNotEmpty() || profile.tlsEnabled
+                        )
+                    )
                 }
                 if (profile.authMethod == SshAuthMethod.PASSWORD) {
                     session.setPassword(secrets.password)
@@ -287,20 +297,64 @@ class SshTunnelEngine(
     }
 
     private class ProtectedSocketFactory(
-        private val protectSocket: (Socket) -> Boolean
+        private val protectSocket: (Socket) -> Boolean,
+        private val profile: TunnelProfile,
+        private val secrets: ProfileSecrets,
+        private val applyPayload: Boolean
     ) : SocketFactory {
+        private val bufferedInputs = IdentityHashMap<Socket, InputStream>()
+
         override fun createSocket(host: String?, port: Int): Socket {
-            val socket = Socket()
-            socket.tcpNoDelay = true
-            if (!protectSocket(socket)) {
-                socket.close()
-                throw IOException("VpnService.protect() rechazó socket SSH.")
+            val targetHost = host ?: profile.host
+            if (!applyPayload) {
+                val socket = Socket()
+                socket.tcpNoDelay = true
+                if (!protectSocket(socket)) {
+                    socket.close()
+                    throw IOException("VpnService.protect() rechazó socket SSH.")
+                }
+                socket.connect(InetSocketAddress(targetHost, port), CONNECT_TIMEOUT_MS)
+                return socket
             }
-            socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
-            return socket
+
+            val socket = RawTcpPayloadExecutor.connectRawSocket(
+                host = targetHost,
+                port = port,
+                useTls = profile.tlsEnabled,
+                sniHost = profile.tlsServerName.ifBlank { profile.host.trim() },
+                verifyTlsCertificate = profile.verifyTlsCertificate,
+                connectTimeoutMs = CONNECT_TIMEOUT_MS,
+                readTimeoutMs = CONNECT_TIMEOUT_MS,
+                protectSocket = protectSocket
+            )
+            try {
+                if (profile.rawHttpPayload.isNotEmpty()) {
+                    val bufferedIn = BufferedInputStream(socket.getInputStream())
+                    val statusLine = RawTcpPayloadExecutor.executeRawPayloadHandshake(
+                        socket = socket,
+                        bufferedIn = bufferedIn,
+                        profile = profile,
+                        secrets = secrets,
+                        targetHost = targetHost,
+                        targetPort = port,
+                        baseReadTimeoutMs = CONNECT_TIMEOUT_MS
+                    )
+                    AppLogger.info(TAG, "Payload SSH/WS aceptado: $statusLine")
+                    synchronized(bufferedInputs) {
+                        bufferedInputs[socket] = bufferedIn
+                    }
+                }
+                socket.soTimeout = 0
+                return socket
+            } catch (t: Throwable) {
+                runCatching { socket.close() }
+                throw t
+            }
         }
 
-        override fun getInputStream(socket: Socket): InputStream = socket.getInputStream()
+        override fun getInputStream(socket: Socket): InputStream =
+            synchronized(bufferedInputs) { bufferedInputs[socket] } ?: socket.getInputStream()
+
         override fun getOutputStream(socket: Socket): OutputStream = socket.getOutputStream()
     }
 
