@@ -1,5 +1,17 @@
 # Changelog — AIO Tunnel VPN
 
+## [1.3.0] - 2026-11-26
+### Enrutamiento SSH Real (`direct-tcpip`), SOCKS5 Local, BadVPN UDPGW y Pila TCP/IP en TUN
+- **Puente TCP/IP -> SSH (`TunPacketRouter` + `SshTunnelEngine`):**
+  - Pila TCP en espacio de usuario refactorizada en `TunPacketRouter`: deduplicación de `SYN` retransmitidos sin abortar el canal `direct-tcpip`, opción MSS en `SYN-ACK`, cola ordenada por flujo (`Channel`) con buffer de reensamblado fuera de orden (`TreeMap`) y cierre medio (`halfCloseOutput`) al recibir `FIN` del cliente para conservar respuestas remotas.
+  - Nuevo servidor local **SOCKS5 RFC 1928** (`LocalSocks5Server` en `127.0.0.1`) respaldado por canales `direct-tcpip` de `SshTunnelEngine`, con registro explícito `"SSH Port Forwarding (direct-tcpip / SOCKS5 127.0.0.1:<puerto>) listo"`.
+- **BadVPN UDPGW y DNS Forwarding activo:**
+  - Nuevo cliente `BadVpnUdpgwClient` sobre `direct-tcpip` hacia `127.0.0.1:<udpgwPort>` (puerto configurable en Editar Perfil, por defecto `7300`; `0` para desactivar), con soporte completo de frames little-endian/big-endian, keepalive, `FLAG_DNS` y multiplexación bidireccional de flujos UDP hacia `tun0`.
+  - Interceptor DNS activo incluso en modo `SYSTEM_DEFAULT` (vía BadVPN UDPGW o `DNS-over-TCP` RFC 1035 sobre `direct-tcpip`) sin evadir el túnel por UDP directo, con registro `"DNS Forwarding activo sobre túnel ..."` y `"UDPGW conectado al puerto remoto <puerto>"`.
+- **Telemetría y Base de Datos:**
+  - Agregada métrica en tiempo real de paquetes por segundo (`packetsPerSec`) en `StatisticsManager` y `DashboardScreen`.
+  - Migración Room v3 -> v4 (`MIGRATION_3_4`) añadiendo `udpgwPort` a `tunnel_profiles`.
+
 ## [1.2.0] - 2026-11-26
 ### Refactorización de Payload Crudo y Sockets TCP/TLS
 - Reemplazados los selectores rígidos de método/ruta/encabezados en **Editar perfil** por un campo multilínea sin restricciones **"Payload HTTP / WebSocket (Crudo)"**.

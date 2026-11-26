@@ -1,8 +1,10 @@
 package com.example.vpn.tun
 
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicInteger
 
 object IpPacketParser {
+    private val ipIdCounter = AtomicInteger(1)
     const val PROTO_ICMP = 1
     const val PROTO_TCP = 6
     const val PROTO_UDP = 17
@@ -116,9 +118,11 @@ object IpPacketParser {
         flags: Int,
         windowSize: Int = 65535,
         payload: ByteArray = ByteArray(0),
-        payloadLength: Int = payload.size
+        payloadLength: Int = payload.size,
+        mssOption: Int? = null
     ): ByteArray {
-        val totalLen = 20 + 20 + payloadLength
+        val tcpHeaderLen = if (mssOption != null) 24 else 20
+        val totalLen = 20 + tcpHeaderLen + payloadLength
         val packet = ByteArray(totalLen)
         val buf = ByteBuffer.wrap(packet)
 
@@ -126,7 +130,7 @@ object IpPacketParser {
         buf.put(0x45.toByte()) // Version 4, IHL 5
         buf.put(0x00)
         buf.putShort(totalLen.toShort())
-        buf.putShort(0) // Identification
+        buf.putShort((ipIdCounter.getAndIncrement() and 0xFFFF).toShort()) // Identification
         buf.putShort(0x4000.toShort()) // Don't Fragment
         buf.put(64.toByte()) // TTL
         buf.put(PROTO_TCP.toByte())
@@ -138,22 +142,27 @@ object IpPacketParser {
         packet[10] = (ipChecksum ushr 8).toByte()
         packet[11] = (ipChecksum and 0xFF).toByte()
 
-        // TCP Header (20 bytes)
+        // TCP Header (20 or 24 bytes)
         buf.putShort(srcPort.toShort())
         buf.putShort(dstPort.toShort())
         buf.putInt((seqNum and 0xFFFFFFFFL).toInt())
         buf.putInt((ackNum and 0xFFFFFFFFL).toInt())
-        buf.put((5 shl 4).toByte()) // Data offset 5 * 4 = 20 bytes
+        buf.put(((tcpHeaderLen / 4) shl 4).toByte()) // Data offset in 32-bit words
         buf.put((flags and 0x3F).toByte())
         buf.putShort(windowSize.coerceIn(0, 65535).toShort())
         buf.putShort(0) // Checksum placeholder
         buf.putShort(0) // Urgent pointer
+        if (mssOption != null) {
+            buf.put(0x02.toByte()) // Option Kind: Maximum Segment Size
+            buf.put(0x04.toByte()) // Option Length: 4
+            buf.putShort(mssOption.coerceIn(512, 1460).toShort())
+        }
         if (payloadLength > 0) {
             buf.put(payload, 0, payloadLength)
         }
 
         val tcpChecksum = computeTransportChecksum(
-            srcIpBytes, dstIpBytes, PROTO_TCP, packet, 20, 20 + payloadLength
+            srcIpBytes, dstIpBytes, PROTO_TCP, packet, 20, tcpHeaderLen + payloadLength
         )
         packet[36] = (tcpChecksum ushr 8).toByte()
         packet[37] = (tcpChecksum and 0xFF).toByte()

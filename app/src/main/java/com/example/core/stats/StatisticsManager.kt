@@ -27,6 +27,7 @@ class StatisticsManager {
     private var sessionStartMillis: Long = 0L
     private var prevRx: Long = 0L
     private var prevTx: Long = 0L
+    private var prevPackets: Long = 0L
 
     private val _stats = MutableStateFlow(TunnelStatistics())
     val stats: StateFlow<TunnelStatistics> = _stats.asStateFlow()
@@ -57,6 +58,7 @@ class StatisticsManager {
         activeConnections.set(0)
         prevRx = 0L
         prevTx = 0L
+        prevPackets = 0L
         sessionStartMillis = 0L
         _stats.value = TunnelStatistics()
     }
@@ -84,10 +86,13 @@ class StatisticsManager {
     private fun publishSnapshot(finalZeroRates: Boolean = false) {
         val currentRx = rxBytes.get()
         val currentTx = txBytes.get()
+        val currentPackets = totalPackets.get()
         val dlRate = if (finalZeroRates) 0L else (currentRx - prevRx).coerceAtLeast(0L)
         val ulRate = if (finalZeroRates) 0L else (currentTx - prevTx).coerceAtLeast(0L)
+        val pktRate = if (finalZeroRates) 0L else (currentPackets - prevPackets).coerceAtLeast(0L)
         prevRx = currentRx
         prevTx = currentTx
+        prevPackets = currentPackets
         val elapsedSec = if (sessionStartMillis > 0L) {
             ((System.currentTimeMillis() - sessionStartMillis) / 1000L).coerceAtLeast(0L)
         } else 0L
@@ -98,7 +103,8 @@ class StatisticsManager {
             downloadBytesPerSec = dlRate,
             uploadBytesPerSec = ulRate,
             activeTcpConnections = activeConnections.get(),
-            totalPacketsForwarded = totalPackets.get(),
+            totalPacketsForwarded = currentPackets,
+            packetsPerSec = pktRate,
             dnsQueriesResolved = dnsQueries.get(),
             sessionDurationSeconds = elapsedSec
         )

@@ -25,16 +25,58 @@ enum class EngineStatus {
 interface TunnelStream : Closeable {
     val inputStream: InputStream
     val outputStream: OutputStream
+    fun halfCloseOutput() {
+        runCatching { outputStream.close() }
+    }
 }
 
 interface UdpRelaySession : Closeable {
+    val isDnsCapable: Boolean get() = false
+
     suspend fun sendDatagram(destIp: String, destPort: Int, payload: ByteArray)
+
+    suspend fun sendUdpPacket(
+        srcClientIp: String,
+        srcClientPort: Int,
+        destIp: String,
+        destPort: Int,
+        payload: ByteArray,
+        isDns: Boolean = false
+    ) {
+        sendDatagram(destIp, destPort, payload)
+    }
+
     suspend fun receiveDatagram(buffer: ByteArray): UdpPacketResult?
+
+    suspend fun receiveUdpPacket(buffer: ByteArray): UdpRelayInboundPacket? {
+        val res = receiveDatagram(buffer) ?: return null
+        return UdpRelayInboundPacket(
+            clientIp = null,
+            clientPort = null,
+            remoteIp = res.sourceIp,
+            remotePort = res.sourcePort,
+            length = res.length
+        )
+    }
+
+    suspend fun resolveDnsQuery(
+        dnsServerIp: String,
+        queryBytes: ByteArray,
+        timeoutMs: Long = 2_000L
+    ): ByteArray? = null
 }
 
 data class UdpPacketResult(
     val sourceIp: String,
     val sourcePort: Int,
+    val length: Int
+)
+
+data class UdpRelayInboundPacket(
+    val clientIp: String?,
+    val clientPort: Int?,
+    val remoteIp: String,
+    val remotePort: Int,
     val length: Int
 )
 
@@ -56,6 +98,7 @@ interface TunnelEngine {
     suspend fun stop()
     suspend fun openTcpTunnel(targetHost: String, targetPort: Int): TunnelStream
     suspend fun openUdpRelay(): UdpRelaySession? = null
+    fun getLocalSocksPort(): Int? = null
     fun getStatistics(): TunnelStatistics
     fun release()
 }

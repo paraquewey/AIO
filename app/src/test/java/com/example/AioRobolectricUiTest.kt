@@ -94,9 +94,10 @@ class AioRobolectricUiTest {
         val samplePayload = "GET /ws HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf][crlf][split]"
         val profile = TunnelProfile(
             name = "Room Check",
-            protocol = TunnelProtocol.HTTP_PROXY,
+            protocol = TunnelProtocol.SSH,
             host = "198.51.100.7",
-            port = 8080,
+            port = 22,
+            udpgwPort = 7301,
             useCustomDns = true,
             dnsServer = "94.140.14.15",
             dnsServerSecondary = "94.140.15.15",
@@ -105,7 +106,8 @@ class AioRobolectricUiTest {
         db.tunnelProfileDao().upsert(profile.toEntity())
         val loaded = db.tunnelProfileDao().getById(profile.id)?.toDomain()
         assertEquals("Room Check", loaded?.name)
-        assertEquals(TunnelProtocol.HTTP_PROXY, loaded?.protocol)
+        assertEquals(TunnelProtocol.SSH, loaded?.protocol)
+        assertEquals(7301, loaded?.udpgwPort)
         assertEquals("94.140.14.15", loaded?.dnsServer)
         assertEquals("94.140.15.15", loaded?.dnsServerSecondary)
         assertEquals(samplePayload, loaded?.rawHttpPayload)
@@ -113,7 +115,7 @@ class AioRobolectricUiTest {
     }
 
     @Test
-    fun `room migration 1 to 2 to 3 preserves profiles and adds rawHttpPayload column`() {
+    fun `room migration 1 to 4 preserves profiles and adds rawHttpPayload and udpgwPort columns`() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val dbName = "migration_test_${System.nanoTime()}.db"
         val factory = FrameworkSQLiteOpenHelperFactory()
@@ -181,12 +183,14 @@ class AioRobolectricUiTest {
         helper.writableDatabase.use { v1Db ->
             AioDatabase.MIGRATION_1_2.migrate(v1Db)
             AioDatabase.MIGRATION_2_3.migrate(v1Db)
-            v1Db.query("SELECT dnsServer, dnsServerSecondary, rawHttpPayload FROM tunnel_profiles WHERE id = 'legacy-1'")
+            AioDatabase.MIGRATION_3_4.migrate(v1Db)
+            v1Db.query("SELECT dnsServer, dnsServerSecondary, rawHttpPayload, udpgwPort FROM tunnel_profiles WHERE id = 'legacy-1'")
                 .use { cursor ->
                     assertEquals(true, cursor.moveToFirst())
                     assertEquals("94.140.14.15", cursor.getString(0))
                     assertEquals("1.0.0.1", cursor.getString(1))
                     assertEquals("", cursor.getString(2))
+                    assertEquals(7300, cursor.getInt(3))
                 }
         }
         context.deleteDatabase(dbName)

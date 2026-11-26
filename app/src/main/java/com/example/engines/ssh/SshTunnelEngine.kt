@@ -14,6 +14,7 @@ import com.example.engines.adapter.EngineContext
 import com.example.engines.adapter.EngineStatus
 import com.example.engines.adapter.TunnelEngine
 import com.example.engines.adapter.TunnelStream
+import com.example.engines.adapter.UdpRelaySession
 import com.example.engines.http.RawTcpPayloadExecutor
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.HostKey
@@ -48,8 +49,10 @@ class SshTunnelEngine(
     override val status: StateFlow<EngineStatus> = _status.asStateFlow()
 
     private var context: EngineContext? = null
+    private var activeProfile: TunnelProfile? = null
     private var jumpSession: Session? = null
     private var primarySession: Session? = null
+    private var localSocksServer: LocalSocks5Server? = null
     private var forwardedLocalPort: Int = -1
 
     override suspend fun validateConfiguration(
@@ -112,7 +115,7 @@ class SshTunnelEngine(
                     val jSession = jumpJsch.getSession(profile.jumpUsername, profile.jumpHost, profile.jumpPort)
                     jSession.setSocketFactory(ProtectedSocketFactory(ctx.protectSocket, profile, secrets, applyPayload = false))
                     if (profile.jumpAuthMethod == SshAuthMethod.PASSWORD) {
-                        jSession.setPassword(secrets.jumpPassword)
+                        jSession.setPassword(secrets.jumpPassword.toByteArray(StandardCharsets.UTF_8))
                     }
                     configureSession(jSession, ctx, profile.jumpHost, profile.jumpPort)
                     AppLogger.info(TAG, "Conectando Jump Host SSH ${profile.jumpHost}:${profile.jumpPort}...")
@@ -145,7 +148,7 @@ class SshTunnelEngine(
                     )
                 }
                 if (profile.authMethod == SshAuthMethod.PASSWORD) {
-                    session.setPassword(secrets.password)
+                    session.setPassword(secrets.password.toByteArray(StandardCharsets.UTF_8))
                 }
                 session.hostKeyAlias = "${profile.host}:${profile.port}"
                 configureSession(session, ctx, profile.host, profile.port)
@@ -155,8 +158,17 @@ class SshTunnelEngine(
                 session.serverAliveInterval = 25_000
                 session.serverAliveCountMax = 3
                 primarySession = session
+                activeProfile = profile
+
+                val socksServer = LocalSocks5Server { dstHost, dstPort ->
+                    openTcpTunnel(dstHost, dstPort)
+                }
+                val socksPort = socksServer.start()
+                localSocksServer = socksServer
+
                 _status.value = EngineStatus.RUNNING
                 AppLogger.info(TAG, "Sesión SSH establecida correctamente.")
+                AppLogger.info(TAG, "SSH Port Forwarding (direct-tcpip / SOCKS5 127.0.0.1:$socksPort) listo")
             }.onFailure { err ->
                 stopInternal()
                 _status.value = EngineStatus.ERROR
@@ -173,6 +185,9 @@ class SshTunnelEngine(
     }
 
     private fun stopInternal() {
+        runCatching { localSocksServer?.close() }
+        localSocksServer = null
+        activeProfile = null
         runCatching { primarySession?.disconnect() }
         primarySession = null
         runCatching {
@@ -202,11 +217,38 @@ class SshTunnelEngine(
             object : TunnelStream {
                 override val inputStream: InputStream = input
                 override val outputStream: OutputStream = output
+                override fun halfCloseOutput() {
+                    runCatching { output.close() }
+                }
                 override fun close() {
                     runCatching { channel.disconnect() }
                 }
             }
         }
+
+    override suspend fun openUdpRelay(): UdpRelaySession? = withContext(Dispatchers.IO) {
+        val session = primarySession ?: return@withContext null
+        if (!session.isConnected) return@withContext null
+        val udpgwPort = activeProfile?.udpgwPort ?: 7300
+        if (udpgwPort !in 1..65535) return@withContext null
+
+        val client = BadVpnUdpgwClient {
+            openTcpTunnel("127.0.0.1", udpgwPort)
+        }
+        if (client.connectInitial()) {
+            AppLogger.info(TAG, "UDPGW conectado al puerto remoto $udpgwPort")
+            client
+        } else {
+            client.close()
+            AppLogger.warn(
+                TAG,
+                "UDPGW no disponible en 127.0.0.1:$udpgwPort (DNS-over-TCP/DoH seguirá activo por direct-tcpip)"
+            )
+            null
+        }
+    }
+
+    override fun getLocalSocksPort(): Int? = localSocksServer?.localPort?.takeIf { it > 0 }
 
     private fun configureSession(session: Session, ctx: EngineContext, realHost: String, realPort: Int) {
         val config = Properties()

@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [TunnelProfileEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AioDatabase : RoomDatabase() {
@@ -97,6 +97,12 @@ abstract class AioDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE tunnel_profiles ADD COLUMN udpgwPort INTEGER NOT NULL DEFAULT 7300")
+            }
+        }
+
         @Volatile
         private var instance: AioDatabase? = null
 
@@ -106,7 +112,7 @@ abstract class AioDatabase : RoomDatabase() {
                     context.applicationContext,
                     AioDatabase::class.java,
                     "aio_tunnel_vpn.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it }
             }
     }
 }

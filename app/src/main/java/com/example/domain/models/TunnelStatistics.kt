@@ -7,6 +7,7 @@ data class TunnelStatistics(
     val uploadBytesPerSec: Long = 0L,
     val activeTcpConnections: Int = 0,
     val totalPacketsForwarded: Long = 0L,
+    val packetsPerSec: Long = 0L,
     val dnsQueriesResolved: Long = 0L,
     val sessionDurationSeconds: Long = 0L
 )

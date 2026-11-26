@@ -6,6 +6,7 @@ import com.example.domain.models.DnsMode
 import com.example.domain.models.TunnelProfile
 import com.example.engines.adapter.TunnelEngine
 import com.example.engines.adapter.TunnelStream
+import com.example.engines.adapter.UdpRelaySession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -77,39 +78,68 @@ class DnsManager(
     }
 
     /**
-     * Resolves active DNS queries coming from tun0 strictly through the active TunnelEngine
-     * using DNS-over-HTTPS (over tunnel TCP+TLS) and/or DNS-over-TCP (RFC 1035 2-byte framing)
-     * with automatic fallback from primaryDns -> secondaryDns.
+     * Resolves active DNS queries coming from tun0 strictly through the active TunnelEngine:
+     *  - DNS_OVER_HTTPS -> DoH inside tunnel TLS+TCP, falling back to DNS-over-TCP and UDPGW.
+     *  - PLAIN_DNS -> DNS-over-TCP (RFC 1035 2-byte framing) with primaryDns -> secondaryDns fallback,
+     *    falling back to UDPGW if TCP/53 is blocked.
+     *  - SYSTEM_DEFAULT -> Active interception (NEVER passive bypass): tries BadVPN UDPGW if connected,
+     *    then DNS-over-TCP (RFC 1035) via direct-tcpip -> primaryDns/secondaryDns.
      * NEVER bypasses the VPN via VpnService.protect() or direct UDP.
      */
     suspend fun resolveWireQueryThroughTunnel(
         queryBytes: ByteArray,
         dnsConfig: ResolvedDnsConfig,
-        engine: TunnelEngine
+        engine: TunnelEngine,
+        udpRelay: UdpRelaySession? = null
     ): ByteArray? = withContext(Dispatchers.IO) {
         when (dnsConfig.dnsMode) {
             DnsMode.DNS_OVER_HTTPS -> {
-                val dohAttempt = resolveViaTunnelDohWithDetails(queryBytes, dnsConfig, engine)
-                if (dohAttempt.responseBytes != null) {
-                    dohAttempt.responseBytes
-                } else {
-                    resolveViaTunnelTcpWithFallback(
+                resolveViaTunnelDohWithDetails(queryBytes, dnsConfig, engine).responseBytes
+                    ?: resolveViaTunnelTcpWithFallback(
                         queryBytes = queryBytes,
                         primaryDns = dnsConfig.primaryDns,
                         secondaryDns = dnsConfig.secondaryDns,
                         engine = engine
                     ).responseBytes
-                }
+                    ?: resolveViaUdpgwWithFallback(queryBytes, dnsConfig, udpRelay)
             }
-            DnsMode.PLAIN_DNS, DnsMode.SYSTEM_DEFAULT -> {
+            DnsMode.PLAIN_DNS -> {
                 resolveViaTunnelTcpWithFallback(
                     queryBytes = queryBytes,
                     primaryDns = dnsConfig.primaryDns,
                     secondaryDns = dnsConfig.secondaryDns,
                     engine = engine
                 ).responseBytes
+                    ?: resolveViaUdpgwWithFallback(queryBytes, dnsConfig, udpRelay)
+            }
+            DnsMode.SYSTEM_DEFAULT -> {
+                resolveViaUdpgwWithFallback(queryBytes, dnsConfig, udpRelay)
+                    ?: resolveViaTunnelTcpWithFallback(
+                        queryBytes = queryBytes,
+                        primaryDns = dnsConfig.primaryDns,
+                        secondaryDns = dnsConfig.secondaryDns,
+                        engine = engine
+                    ).responseBytes
             }
         }
+    }
+
+    private suspend fun resolveViaUdpgwWithFallback(
+        queryBytes: ByteArray,
+        dnsConfig: ResolvedDnsConfig,
+        udpRelay: UdpRelaySession?
+    ): ByteArray? {
+        if (udpRelay == null || !udpRelay.isDnsCapable) return null
+        val primary = dnsConfig.primaryDns.trim().ifBlank { DEFAULT_PRIMARY_DNS }
+        val first = udpRelay.resolveDnsQuery(primary, queryBytes, DNS_QUERY_TIMEOUT_MS)
+        if (first != null && first.size >= 12) return first
+
+        val secondary = dnsConfig.secondaryDns.trim()
+        if (secondary.isNotBlank() && secondary != primary) {
+            val second = udpRelay.resolveDnsQuery(secondary, queryBytes, DNS_QUERY_TIMEOUT_MS)
+            if (second != null && second.size >= 12) return second
+        }
+        return null
     }
 
     suspend fun resolveViaTunnelTcpWithFallback(

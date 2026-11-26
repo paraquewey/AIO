@@ -24,6 +24,7 @@ data class TunnelProfile(
     val jumpAuthMethod: SshAuthMethod = SshAuthMethod.PASSWORD,
     val jumpPasswordSecretId: String? = null,
     val jumpPrivateKeySecretId: String? = null,
+    val udpgwPort: Int = 7300,
     // TLS & Transport
     val transport: TransportType = TransportType.TCP,
     val tlsEnabled: Boolean = false,

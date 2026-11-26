@@ -115,6 +115,7 @@ fun ProfileEditorScreen(
     var jumpAuthMethod by remember { mutableStateOf(existingProfile?.jumpAuthMethod ?: SshAuthMethod.PASSWORD) }
     var jumpPassword by remember { mutableStateOf(existingSecrets.jumpPassword) }
     var jumpKeyPem by remember { mutableStateOf(existingSecrets.jumpPrivateKeyPem) }
+    var udpgwPortStr by remember { mutableStateOf((existingProfile?.udpgwPort ?: 7300).toString()) }
 
     var transport by remember { mutableStateOf(existingProfile?.transport ?: TransportType.TCP) }
     var tlsEnabled by remember {
@@ -176,6 +177,11 @@ fun ProfileEditorScreen(
                             val parsedPort = portStr.toIntOrNull()
                             val parsedMtu = mtuStr.toIntOrNull() ?: 1500
                             val parsedJumpPort = jumpPortStr.toIntOrNull() ?: 22
+                            val parsedUdpgwPort = if (udpgwPortStr.isBlank()) 7300 else udpgwPortStr.toIntOrNull()
+                            if (parsedUdpgwPort == null || parsedUdpgwPort !in 0..65535) {
+                                validationError = "El puerto UDPGW debe ser 0 (desactivado) o entre 1 y 65535."
+                                return@Button
+                            }
                             if (name.isBlank()) {
                                 validationError = "Asigna un nombre al perfil."
                                 return@Button
@@ -223,6 +229,7 @@ fun ProfileEditorScreen(
                                 jumpPort = parsedJumpPort,
                                 jumpUsername = jumpUser.trim(),
                                 jumpAuthMethod = jumpAuthMethod,
+                                udpgwPort = parsedUdpgwPort,
                                 transport = if (hasWebSocketUpgrade) TransportType.WEBSOCKET else transport,
                                 tlsEnabled = tlsEnabled || protocol == TunnelProtocol.HTTPS_PROXY,
                                 tlsServerName = tlsSni.trim(),
@@ -482,6 +489,19 @@ fun ProfileEditorScreen(
                             visualTransformation = PasswordVisualTransformation(),
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    if (protocol == TunnelProtocol.SSH || protocol == TunnelProtocol.SSH_JUMP) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = udpgwPortStr,
+                            onValueChange = { udpgwPortStr = it.filter { ch -> ch.isDigit() } },
+                            label = { Text("Puerto UDPGW (BadVPN, por defecto 7300; 0 = desactivar)") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("editor_udpgw_port_input")
                         )
                     }
                 }

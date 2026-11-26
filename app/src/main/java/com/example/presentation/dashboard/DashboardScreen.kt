@@ -475,7 +475,7 @@ fun DashboardScreen(
                 MetricTile(
                     icon = Icons.Default.Speed,
                     label = "Paquetes / DNS",
-                    value = "${statistics.totalPacketsForwarded} pkts",
+                    value = "${statistics.packetsPerSec} pkt/s · ${statistics.totalPacketsForwarded}",
                     subValue = "Consultas DNS: ${statistics.dnsQueriesResolved}",
                     accent = GruvboxYellow,
                     modifier = Modifier.weight(1f)
