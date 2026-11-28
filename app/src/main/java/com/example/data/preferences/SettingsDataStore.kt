@@ -80,6 +80,7 @@ class SettingsDataStore(private val context: Context) {
         val TERMINAL_FONT_VERSION = longPreferencesKey("terminal_font_version")
 
         // Advanced Engine & Performance Tuning
+        val ADAPTIVE_AUTO_TUNING = booleanPreferencesKey("adaptive_auto_tuning")
         val NETWORK_PRESET = stringPreferencesKey("network_preset")
         val TRANSFER_BUFFER_KB = intPreferencesKey("transfer_buffer_kb")
         val IMMEDIATE_FLUSH = booleanPreferencesKey("immediate_flush")
@@ -149,6 +150,7 @@ class SettingsDataStore(private val context: Context) {
         terminalFontPath = prefs[Keys.TERMINAL_FONT_PATH]?.takeIf { it.isNotBlank() },
         terminalFontScale = (prefs[Keys.TERMINAL_FONT_SCALE] ?: 1.0f).coerceIn(0.80f, 1.35f),
         terminalFontVersion = prefs[Keys.TERMINAL_FONT_VERSION] ?: 0L,
+        adaptiveAutoTuningEnabled = prefs[Keys.ADAPTIVE_AUTO_TUNING] ?: true,
         networkPreset = prefs[Keys.NETWORK_PRESET]?.let {
             runCatching { NetworkPreset.valueOf(it) }.getOrNull()
         } ?: NetworkPreset.BALANCED,
@@ -251,6 +253,7 @@ class SettingsDataStore(private val context: Context) {
             prefs[Keys.TERMINAL_FONT_SCALE] = updated.terminalFontScale
             prefs[Keys.TERMINAL_FONT_VERSION] = updated.terminalFontVersion
 
+            prefs[Keys.ADAPTIVE_AUTO_TUNING] = updated.adaptiveAutoTuningEnabled
             prefs[Keys.NETWORK_PRESET] = updated.networkPreset.name
             prefs[Keys.TRANSFER_BUFFER_KB] = updated.transferBufferKb
             prefs[Keys.IMMEDIATE_FLUSH] = updated.immediateFlush

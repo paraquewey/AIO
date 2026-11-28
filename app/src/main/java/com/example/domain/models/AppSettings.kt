@@ -104,6 +104,7 @@ data class AppSettings(
     val terminalFontScale: Float = 1.0f,
     val terminalFontVersion: Long = 0L,
     // Advanced Engine & Performance Tuning
+    val adaptiveAutoTuningEnabled: Boolean = true,
     val networkPreset: NetworkPreset = NetworkPreset.BALANCED,
     val transferBufferKb: Int = 16,
     val immediateFlush: Boolean = true,
@@ -187,6 +188,7 @@ data class AppSettings(
     }
 
     fun restoreOptimalEngineDefaults(): AppSettings = applyNetworkPreset(NetworkPreset.BALANCED).copy(
+        adaptiveAutoTuningEnabled = true,
         bypassLan = true,
         strictTlsVerification = true
     )

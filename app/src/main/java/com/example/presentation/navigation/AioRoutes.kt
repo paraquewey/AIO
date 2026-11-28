@@ -26,5 +26,17 @@ sealed interface AioRoute {
     data object UiCustomization : AioRoute
 
     @Serializable
+    data object NetworkSettings : AioRoute
+
+    @Serializable
+    data object SharingBackgroundSettings : AioRoute
+
+    @Serializable
+    data object SecuritySettings : AioRoute
+
+    @Serializable
+    data object AboutSettings : AioRoute
+
+    @Serializable
     data class ProfileEditor(val profileId: String? = null) : AioRoute
 }

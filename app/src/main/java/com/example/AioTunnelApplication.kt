@@ -3,6 +3,7 @@ package com.example
 import android.app.Application
 import com.example.core.connection.ConnectionManager
 import com.example.core.logger.AppLogger
+import com.example.core.network.AdaptiveNetworkTuner
 import com.example.core.stats.StatisticsManager
 import com.example.data.database.AioDatabase
 import com.example.data.preferences.SettingsDataStore
@@ -29,6 +30,8 @@ class AioTunnelApplication : Application() {
         private set
     lateinit var connectionManager: ConnectionManager
         private set
+    lateinit var adaptiveNetworkTuner: AdaptiveNetworkTuner
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -40,6 +43,7 @@ class AioTunnelApplication : Application() {
         statisticsManager = StatisticsManager()
         engineFactory = EngineFactory(sshHostKeyStore)
         connectionManager = ConnectionManager(this, settingsRepository)
+        adaptiveNetworkTuner = AdaptiveNetworkTuner(this).also { it.startObserving() }
 
         AppLogger.info("AioApp", "AIO Tunnel VPN inicializado (Keystore AES-GCM=${cryptoManager.isKeystoreHardwareAvailable()})")
     }

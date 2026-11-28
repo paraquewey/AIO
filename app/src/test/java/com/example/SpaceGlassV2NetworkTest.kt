@@ -15,6 +15,10 @@ import com.example.engines.adapter.TunnelEngine
 import com.example.engines.adapter.TunnelStream
 import android.graphics.Bitmap
 import android.graphics.Color
+import com.example.core.network.AdaptiveNetworkTuner
+import com.example.core.network.HardwareProfile
+import com.example.core.network.SignalQualityTier
+import com.example.core.network.SignalSnapshot
 import com.example.engines.ssh.DynamicChannelLimiter
 import com.example.engines.ssh.SshTunnelEngine
 import com.example.ui.theme.computeBitmapAverageLuminance
@@ -290,6 +294,106 @@ class SpaceGlassV2NetworkTest {
 
         darkBmp.recycle()
         brightBmp.recycle()
+    }
+
+    @Test
+    fun `adaptive network tuner optimizes parameters across wifi, weak cellular, low ram, and manual mode`() {
+        val healthyHw = HardwareProfile(
+            cpuCores = 8,
+            availableRamMb = 3072L,
+            totalRamMb = 8192L,
+            isLowMemory = false,
+            ramLabel = "RAM OK"
+        )
+        val lowRamHw = HardwareProfile(
+            cpuCores = 4,
+            availableRamMb = 380L,
+            totalRamMb = 2048L,
+            isLowMemory = true,
+            ramLabel = "RAM Limitada (380 MB)"
+        )
+        val strongWifi = SignalSnapshot(
+            transportLabel = "Wi-Fi",
+            isWifi = true,
+            isCellular = false,
+            signalBars = 4,
+            tier = SignalQualityTier.STRONG,
+            recentLatencyMs = 28L,
+            recentJitterMs = 6L
+        )
+        val weakCellular = SignalSnapshot(
+            transportLabel = "4G",
+            isWifi = false,
+            isCellular = true,
+            signalBars = 1,
+            tier = SignalQualityTier.WEAK,
+            recentLatencyMs = 410L,
+            recentJitterMs = 95L
+        )
+
+        val baseSettings = AppSettings(adaptiveAutoTuningEnabled = true)
+
+        // 1. Strong Wi-Fi + MAX_SPEED + healthy RAM
+        val speedWifi = AdaptiveNetworkTuner.computeAdaptiveTuning(
+            preset = NetworkPreset.MAX_SPEED,
+            baseSettings = baseSettings,
+            hardware = healthyHw,
+            signal = strongWifi
+        )
+        assertEquals(512, speedWifi.effectiveConfig.sshWindowKb)
+        assertEquals(32, speedWifi.effectiveConfig.transferBufferKb)
+        assertEquals(192, speedWifi.effectiveConfig.tunQueueCapacity)
+        assertEquals(20, speedWifi.effectiveConfig.sshKeepAliveSeconds)
+        assertTrue(speedWifi.summaryText.startsWith("Activo •"))
+
+        // 2. Weak Cellular + high jitter shrinks buffers/window/keepalive to avoid bufferbloat
+        val weakMobile = AdaptiveNetworkTuner.computeAdaptiveTuning(
+            preset = NetworkPreset.MAX_SPEED,
+            baseSettings = baseSettings,
+            hardware = healthyHw,
+            signal = weakCellular
+        )
+        assertEquals(128, weakMobile.effectiveConfig.sshWindowKb)
+        assertEquals(8, weakMobile.effectiveConfig.transferBufferKb)
+        assertEquals(8, weakMobile.effectiveConfig.sshKeepAliveSeconds)
+        assertEquals(48, weakMobile.effectiveConfig.tunQueueCapacity)
+
+        // 3. Low RAM + Strong Wi-Fi caps buffer, queue, channels, and window safely
+        val lowRamWifi = AdaptiveNetworkTuner.computeAdaptiveTuning(
+            preset = NetworkPreset.MAX_SPEED,
+            baseSettings = baseSettings,
+            hardware = lowRamHw,
+            signal = strongWifi
+        )
+        assertTrue(lowRamWifi.effectiveConfig.transferBufferKb <= 16)
+        assertTrue(lowRamWifi.effectiveConfig.tunQueueCapacity <= 64)
+        assertTrue(lowRamWifi.effectiveConfig.maxConcurrentSshChannels <= 16)
+        assertTrue(lowRamWifi.effectiveConfig.sshWindowKb <= 256)
+
+        // 4. Manual mode returns exact AppSettings values untouched
+        val manualSettings = AppSettings(
+            adaptiveAutoTuningEnabled = false,
+            networkPreset = NetworkPreset.CUSTOM,
+            transferBufferKb = 64,
+            sshWindowKb = 1024,
+            sshKeepAliveSeconds = 42,
+            maxConcurrentSshChannels = 40,
+            tunQueueCapacity = 220,
+            smartDnsCacheEnabled = false
+        )
+        val manualRes = AdaptiveNetworkTuner.computeAdaptiveTuning(
+            preset = NetworkPreset.CUSTOM,
+            baseSettings = manualSettings,
+            hardware = lowRamHw,
+            signal = weakCellular
+        )
+        assertEquals(64, manualRes.effectiveConfig.transferBufferKb)
+        assertEquals(1024, manualRes.effectiveConfig.sshWindowKb)
+        assertEquals(42, manualRes.effectiveConfig.sshKeepAliveSeconds)
+        assertEquals(40, manualRes.effectiveConfig.maxConcurrentSshChannels)
+        assertEquals(220, manualRes.effectiveConfig.tunQueueCapacity)
+        assertFalse(manualRes.effectiveConfig.smartDnsCacheEnabled)
+        assertTrue(manualRes.summaryText.startsWith("Manual •"))
     }
 
     private fun buildValidDnsAResponse(query: ByteArray, ip: String, ttlSec: Int): ByteArray {

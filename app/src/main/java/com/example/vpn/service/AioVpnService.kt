@@ -37,6 +37,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -127,7 +128,12 @@ class AioVpnService : VpnService() {
         )
         val dnsConfig = DnsManager.resolveActiveDnsConfig(profile, appSettings)
 
-        val tuningConfig = appSettings.toEngineTuningConfig()
+        val adaptiveResult = if (appSettings.adaptiveAutoTuningEnabled) {
+            app.adaptiveNetworkTuner.computeForSettings(appSettings)
+        } else {
+            null
+        }
+        val tuningConfig = adaptiveResult?.effectiveConfig ?: appSettings.toEngineTuningConfig()
         val engineContext = EngineContext(
             protectSocket = { sock -> protect(sock) },
             protectDatagramSocket = { ds -> protect(ds) },
@@ -139,6 +145,10 @@ class AioVpnService : VpnService() {
             tuningConfig = tuningConfig
         )
         engine.initialize(engineContext)
+        AppLogger.info(
+            TAG,
+            adaptiveResult?.summaryText ?: "Ajuste manual · Ventana ${tuningConfig.sshWindowKb} KB, Búfer ${tuningConfig.transferBufferKb} KB"
+        )
 
         connMgr.setState(ConnectionState.Connecting(profile.name, "Autenticando ${profile.host}:${profile.port}"))
         updateNotification("Conectando a ${profile.host}:${profile.port}...")
@@ -236,6 +246,7 @@ class AioVpnService : VpnService() {
                 )
                 if (measuredLatency != null) {
                     app.profileRepository.updateLatency(profile.id, measuredLatency)
+                    app.adaptiveNetworkTuner.recordLatencySample(measuredLatency)
                 }
             }
         }
@@ -254,8 +265,15 @@ class AioVpnService : VpnService() {
         val currentTuningRef = java.util.concurrent.atomic.AtomicReference(com.example.domain.models.EngineTuningConfig())
         wifiShareObserverJob = serviceScope.launch(Dispatchers.IO) {
             var currentPort: Int? = null
-            app.settingsRepository.settings.collect { settings ->
-                val tuning = settings.toEngineTuningConfig()
+            combine(
+                app.settingsRepository.settings,
+                app.adaptiveNetworkTuner.state
+            ) { settings, _ -> settings }.collect { settings ->
+                val tuning = if (settings.adaptiveAutoTuningEnabled) {
+                    app.adaptiveNetworkTuner.computeForSettings(settings).effectiveConfig
+                } else {
+                    settings.toEngineTuningConfig()
+                }
                 currentTuningRef.set(tuning)
                 if (!disconnectingFlag && activeEngine === engine) {
                     engine.updateTuning(tuning)

@@ -1,6 +1,8 @@
 package com.example
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -88,14 +90,46 @@ class AioRobolectricUiTest {
 
         composeRule.onNodeWithTag("nav_settings").performClick()
         composeRule.waitForIdle()
+        assertTrue(composeRule.onAllNodesWithText("Apariencia e idioma", substring = true).fetchSemanticsNodes().isEmpty())
+        composeRule.onNodeWithTag("settings_ui_customization_card").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_card_network").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_card_sharing_bg").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_card_security").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_card_about").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_advanced_drawer_header").performScrollTo().assertIsDisplayed()
+
+        // Navigate through each modular Settings subscreen and verify back arrow
+        composeRule.onNodeWithTag("settings_card_network").performScrollTo().performClick()
+        composeRule.waitForIdle()
         composeRule.onNodeWithTag("settings_keep_trying_switch").assertIsDisplayed()
         composeRule.onNodeWithTag("settings_auto_reconnect_switch").assertIsDisplayed()
-        composeRule.onNodeWithTag("settings_wakelock_switch").performScrollTo().assertIsDisplayed().assertIsOn()
         composeRule.onNodeWithTag("settings_timeout_input").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag("settings_wifi_proxy_switch").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag("settings_battery_optimization_button").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("settings_dns1_input").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("settings_dns2_input").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("network_settings_back_button").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("settings_card_sharing_bg").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_wifi_proxy_switch").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_wakelock_switch").performScrollTo().assertIsDisplayed().assertIsOn()
+        composeRule.onNodeWithTag("settings_battery_optimization_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("sharing_settings_back_button").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("settings_card_security").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_keystore_status_badge").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_strict_tls_switch").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_clear_known_hosts_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("security_settings_back_button").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("settings_card_about").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("about_version_label").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("about_settings_back_button").performClick()
+        composeRule.waitForIdle()
     }
 
     @Test
@@ -122,6 +156,13 @@ class AioRobolectricUiTest {
         composeRule.onNodeWithTag("settings_advanced_drawer_header").performScrollTo().performClick()
         composeRule.waitForIdle()
 
+        // Adaptive Auto-Tuning is ON by default and locks manual sliders/toggles
+        composeRule.onNodeWithTag("settings_adaptive_tuning_switch").performScrollTo().assertIsOn()
+        composeRule.onNodeWithTag("settings_adaptive_summary_badge").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_smart_dns_cache_switch").performScrollTo().assertIsNotEnabled()
+        composeRule.onNodeWithTag("settings_tun_queue_slider").performScrollTo().assertIsNotEnabled()
+
+        // Presets remain selectable as target plans while Adaptive is ON
         composeRule.onNodeWithTag("preset_speed").performScrollTo().performClick()
         composeRule.waitUntil(timeoutMillis = 5_000L) {
             composeRule.onAllNodesWithText("Perfil actual: Máxima Velocidad", substring = true)
@@ -135,9 +176,11 @@ class AioRobolectricUiTest {
         }
         composeRule.onNodeWithTag("settings_kill_switch").performScrollTo().assertIsOn()
 
-        // Verify TUN queue slider and Smart DNS SWR switch inside advanced drawer
-        composeRule.onNodeWithTag("settings_tun_queue_slider").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag("settings_smart_dns_cache_switch").performScrollTo().assertIsOn().performClick()
+        // Disable Adaptive Auto-Tuning to unlock manual sliders/switches
+        composeRule.onNodeWithTag("settings_adaptive_tuning_switch").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_tun_queue_slider").performScrollTo().assertIsEnabled()
+        composeRule.onNodeWithTag("settings_smart_dns_cache_switch").performScrollTo().assertIsEnabled().assertIsOn().performClick()
         composeRule.waitUntil(timeoutMillis = 5_000L) {
             composeRule.onAllNodesWithText("Perfil actual: Personalizado", substring = true)
                 .fetchSemanticsNodes().isNotEmpty()
@@ -148,6 +191,7 @@ class AioRobolectricUiTest {
             composeRule.onAllNodesWithText("Perfil actual: Equilibrado (Recomendado)", substring = true)
                 .fetchSemanticsNodes().isNotEmpty()
         }
+        composeRule.onNodeWithTag("settings_adaptive_tuning_switch").performScrollTo().assertIsOn()
         composeRule.onNodeWithTag("settings_smart_dns_cache_switch").performScrollTo().assertIsOn()
     }
 
@@ -160,20 +204,20 @@ class AioRobolectricUiTest {
         composeRule.onNodeWithTag("settings_ui_customization_card").performScrollTo().performClick()
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithTag("font_mode_adaptive").assertIsDisplayed()
-        composeRule.onNodeWithTag("font_mode_white").performClick()
+        composeRule.onNodeWithTag("font_mode_adaptive").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("font_mode_white").performScrollTo().performClick()
         composeRule.waitUntil(timeoutMillis = 5_000L) {
             composeRule.onAllNodesWithText("Texto activo: Claro (#F8FAFC)", substring = true)
                 .fetchSemanticsNodes().isNotEmpty()
         }
 
-        composeRule.onNodeWithTag("font_mode_black").performClick()
+        composeRule.onNodeWithTag("font_mode_black").performScrollTo().performClick()
         composeRule.waitUntil(timeoutMillis = 5_000L) {
             composeRule.onAllNodesWithText("Texto activo: Oscuro (#0F172A)", substring = true)
                 .fetchSemanticsNodes().isNotEmpty()
         }
 
-        composeRule.onNodeWithTag("font_mode_adaptive").performClick()
+        composeRule.onNodeWithTag("font_mode_adaptive").performScrollTo().performClick()
         composeRule.waitForIdle()
 
         composeRule.onNodeWithTag("ui_custom_pick_bg_button").performScrollTo().assertIsDisplayed()
@@ -325,13 +369,20 @@ class AioRobolectricUiTest {
         composeRule.onNodeWithTag("nav_settings").performClick()
         composeRule.waitForIdle()
 
+        composeRule.onNodeWithTag("settings_card_network").performScrollTo().performClick()
+        composeRule.waitForIdle()
+
         composeRule.onNodeWithTag("settings_timeout_input").performScrollTo().performTextClearance()
         composeRule.onNodeWithTag("settings_timeout_input").performTextInput("1500")
         composeRule.waitForIdle()
         composeRule.onAllNodesWithText("Rango permitido: mínimo 1 s y máximo 999 s.").fetchSemanticsNodes()
             .let { assertTrue(it.isNotEmpty()) }
-
         composeRule.onNodeWithTag("settings_bypass_lan_switch").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("network_settings_back_button").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("settings_card_sharing_bg").performScrollTo().performClick()
+        composeRule.waitForIdle()
         composeRule.onNodeWithTag("settings_wifi_proxy_switch").performScrollTo().performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("settings_wifi_proxy_port_input").performScrollTo().performTextClearance()
@@ -339,6 +390,8 @@ class AioRobolectricUiTest {
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("settings_wifi_proxy_address").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("settings_copy_proxy_ip_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("sharing_settings_back_button").performClick()
+        composeRule.waitForIdle()
     }
 
     @Test

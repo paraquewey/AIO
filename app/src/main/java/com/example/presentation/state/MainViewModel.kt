@@ -13,6 +13,8 @@ import com.example.ui.theme.FontSlot
 import com.example.ui.theme.TextureSlot
 import com.example.ui.theme.ThemePackManager
 import com.example.core.logger.AppLogger
+import com.example.core.network.AdaptiveNetworkTuner
+import com.example.core.network.AdaptiveTuningResult
 import com.example.data.import_export.ConfigParserAndExporter
 import com.example.data.security.SshHostKeyStore
 import com.example.domain.models.AppSettings
@@ -41,6 +43,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -118,6 +121,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _dnsLeakReport = MutableStateFlow(DnsLeakReport())
     val dnsLeakReport: StateFlow<DnsLeakReport> = _dnsLeakReport.asStateFlow()
 
+    val adaptiveTuningState: StateFlow<AdaptiveTuningResult> = combine(
+        settingsRepo.settings,
+        app.adaptiveNetworkTuner.state
+    ) { currentSettings, _ ->
+        app.adaptiveNetworkTuner.computeForSettings(currentSettings)
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        app.adaptiveNetworkTuner.state.value
+    )
+
+    private val _keystoreHardwareAvailable = MutableStateFlow(false)
+    val keystoreHardwareAvailable: StateFlow<Boolean> = _keystoreHardwareAvailable.asStateFlow()
+
     private val _userMessage = MutableStateFlow<String?>(null)
     val userMessage: StateFlow<String?> = _userMessage.asStateFlow()
 
@@ -133,6 +150,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         refreshKnownHosts()
+        viewModelScope.launch(Dispatchers.IO) {
+            _keystoreHardwareAvailable.value = app.cryptoManager.isKeystoreHardwareAvailable()
+        }
         viewModelScope.launch {
             settings.collect { current ->
                 AppLogger.verboseEnabled = current.verboseDebugLogs
@@ -512,6 +532,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         qualityGrade = if (i == totalPings - 1) classifyQuality(avgMs, jitterMs, lossPct) else null,
                         usedTunnel = isConnected
                     )
+                    if (i == totalPings - 1 && avgMs != null) {
+                        app.adaptiveNetworkTuner.recordLatencySample(avgMs, jitterMs)
+                    }
                 }
             }
         }

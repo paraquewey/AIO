@@ -75,7 +75,11 @@ import com.example.presentation.dashboard.DashboardScreen
 import com.example.presentation.diagnostics.DiagnosticsScreen
 import com.example.presentation.navigation.AioRoute
 import com.example.presentation.servers.ServersScreen
+import com.example.presentation.settings.AboutAppSettingsScreen
+import com.example.presentation.settings.NetworkResilienceSettingsScreen
+import com.example.presentation.settings.SecuritySettingsScreen
 import com.example.presentation.settings.SettingsScreen
+import com.example.presentation.settings.SharingBackgroundSettingsScreen
 import com.example.presentation.settings.UiCustomizationScreen
 import com.example.presentation.state.MainViewModel
 import com.example.ui.theme.AioTunnelTheme
@@ -120,6 +124,8 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
     val logs by viewModel.logs.collectAsStateWithLifecycle()
     val installedApps by viewModel.installedApps.collectAsStateWithLifecycle()
     val isMeasuringLatency by viewModel.isMeasuringLatency.collectAsStateWithLifecycle()
+    val adaptiveTuning by viewModel.adaptiveTuningState.collectAsStateWithLifecycle()
+    val keystoreAvailable by viewModel.keystoreHardwareAvailable.collectAsStateWithLifecycle()
     val userMessage by viewModel.userMessage.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -243,7 +249,11 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
         val currentDestination = backStackEntry?.destination
         val isSubScreen = currentDestination?.hasRoute<AioRoute.ProfileEditor>() == true ||
             currentDestination?.hasRoute<AioRoute.Diagnostics>() == true ||
-            currentDestination?.hasRoute<AioRoute.UiCustomization>() == true
+            currentDestination?.hasRoute<AioRoute.UiCustomization>() == true ||
+            currentDestination?.hasRoute<AioRoute.NetworkSettings>() == true ||
+            currentDestination?.hasRoute<AioRoute.SharingBackgroundSettings>() == true ||
+            currentDestination?.hasRoute<AioRoute.SecuritySettings>() == true ||
+            currentDestination?.hasRoute<AioRoute.AboutSettings>() == true
 
         val navigateTopLevel: (AioRoute) -> Unit = { route ->
             navController.navigate(route) {
@@ -429,9 +439,14 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
                                     SettingsScreen(
                                         settings = settings,
                                         wifiProxyActivePort = wifiProxyActivePort,
+                                        adaptiveTuning = adaptiveTuning,
+                                        knownHostsCount = knownHosts.size,
                                         onUpdateSettings = { viewModel.updateSettings(it) },
-                                        onClearKnownHosts = { viewModel.clearAllKnownHosts() },
                                         onOpenUiCustomization = { navController.navigate(AioRoute.UiCustomization) },
+                                        onOpenNetworkSettings = { navController.navigate(AioRoute.NetworkSettings) },
+                                        onOpenSharingBackgroundSettings = { navController.navigate(AioRoute.SharingBackgroundSettings) },
+                                        onOpenSecuritySettings = { navController.navigate(AioRoute.SecuritySettings) },
+                                        onOpenAboutSettings = { navController.navigate(AioRoute.AboutSettings) },
                                         onShowMessage = { viewModel.postMessage(it) }
                                     )
                                 }
@@ -448,6 +463,38 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
                                         onExportThemePackage = { onReady -> viewModel.exportThemePackage(onReady) },
                                         onImportThemePackage = { uri -> viewModel.importThemePackage(uri) },
                                         onRestoreFactoryDefaults = { viewModel.restoreFactoryUiDefaults() },
+                                        onBack = { navController.popBackStack() }
+                                    )
+                                }
+                                composable<AioRoute.NetworkSettings> {
+                                    NetworkResilienceSettingsScreen(
+                                        settings = settings,
+                                        onUpdateSettings = { viewModel.updateSettings(it) },
+                                        onBack = { navController.popBackStack() }
+                                    )
+                                }
+                                composable<AioRoute.SharingBackgroundSettings> {
+                                    SharingBackgroundSettingsScreen(
+                                        settings = settings,
+                                        wifiProxyActivePort = wifiProxyActivePort,
+                                        onUpdateSettings = { viewModel.updateSettings(it) },
+                                        onShowMessage = { viewModel.postMessage(it) },
+                                        onBack = { navController.popBackStack() }
+                                    )
+                                }
+                                composable<AioRoute.SecuritySettings> {
+                                    SecuritySettingsScreen(
+                                        settings = settings,
+                                        keystoreAvailable = keystoreAvailable,
+                                        knownHosts = knownHosts,
+                                        onUpdateSettings = { viewModel.updateSettings(it) },
+                                        onRemoveKnownHost = { host, port -> viewModel.removeKnownHost(host, port) },
+                                        onClearKnownHosts = { viewModel.clearAllKnownHosts() },
+                                        onBack = { navController.popBackStack() }
+                                    )
+                                }
+                                composable<AioRoute.AboutSettings> {
+                                    AboutAppSettingsScreen(
                                         onBack = { navController.popBackStack() }
                                     )
                                 }
