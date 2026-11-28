@@ -10,6 +10,8 @@ import com.example.engines.adapter.EngineContext
 import com.example.engines.adapter.EngineStatus
 import com.example.engines.adapter.TunnelEngine
 import com.example.engines.adapter.TunnelStream
+import com.example.engines.proxy.WifiShareProxyServer
+import com.example.engines.ssh.SshTunnelEngine
 import com.example.vpn.tun.DnsManager
 import com.example.vpn.tun.TunPacketRouter
 import com.example.vpn.tun.TunnelSocketBridge
@@ -283,8 +285,104 @@ class DiagnosticsAndLowLatencyTest {
     }
 
     @Test
-    fun `tun packet router qos threshold separates small control packets from bulk traffic`() {
-        assertEquals(160, TunPacketRouter.PRIORITY_PACKET_THRESHOLD_BYTES)
+    fun `ssh engine and tun router use optimal 256kb window, 15s keepalive, 16kb buffers and 64-pkt backpressure`() {
+        assertEquals(262_144, SshTunnelEngine.SSH_LOCAL_WINDOW_BYTES)
+        assertEquals(32_768, SshTunnelEngine.SSH_LOCAL_PACKET_BYTES)
+        assertEquals(15_000, SshTunnelEngine.SSH_SERVER_ALIVE_INTERVAL_MS)
+        assertEquals(16_384, TunPacketRouter.COPY_BUFFER_BYTES)
+        assertEquals(64, TunPacketRouter.TUN_WRITE_QUEUE_CAPACITY)
+        assertEquals(16_384, WifiShareProxyServer.COPY_BUFFER_BYTES)
+    }
+
+    @Test
+    fun `wifi share proxy streams multi-megabyte download with immediate flush and zero byte loss`() = runTest {
+        val totalBytes = 4 * 1024 * 1024 // 4 MB continuous stream
+        val chunkSize = 16_384
+        val sourcePattern = ByteArray(totalBytes) { idx -> (idx * 31 + 7).toByte() }
+        val receivedOut = ByteArrayOutputStream(totalBytes)
+        val flushCount = AtomicInteger(0)
+
+        val originServer = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
+        val originThread = thread(isDaemon = true) {
+            originServer.use { ss ->
+                val s = ss.accept()
+                s.use { sock ->
+                    val out = sock.getOutputStream()
+                    var off = 0
+                    while (off < totalBytes) {
+                        val len = minOf(chunkSize, totalBytes - off)
+                        out.write(sourcePattern, off, len)
+                        out.flush()
+                        off += len
+                    }
+                    sock.shutdownOutput()
+                }
+            }
+        }
+
+        val proxy = WifiShareProxyServer(
+            listenPort = 0,
+            openTunnel = { _, _ ->
+                val sock = Socket(InetAddress.getByName("127.0.0.1"), originServer.localPort).apply {
+                    tcpNoDelay = true
+                }
+                val rawOut = sock.getOutputStream()
+                val trackedOut = object : OutputStream() {
+                    override fun write(b: Int) = rawOut.write(b)
+                    override fun write(b: ByteArray, off: Int, len: Int) = rawOut.write(b, off, len)
+                    override fun flush() {
+                        flushCount.incrementAndGet()
+                        rawOut.flush()
+                    }
+                    override fun close() = rawOut.close()
+                }
+                object : TunnelStream {
+                    override val inputStream: InputStream = sock.getInputStream()
+                    override val outputStream: OutputStream = trackedOut
+                    override fun halfCloseOutput() {
+                        runCatching { sock.shutdownOutput() }
+                    }
+                    override fun close() {
+                        runCatching { sock.close() }
+                    }
+                }
+            }
+        )
+        val proxyPort = proxy.start()
+
+        try {
+            Socket(InetAddress.getByName("127.0.0.1"), proxyPort).use { client ->
+                client.soTimeout = 5_000
+                val out = client.getOutputStream()
+                val inp = client.getInputStream()
+                out.write("CONNECT download.test:443 HTTP/1.1\r\nHost: download.test:443\r\n\r\n".toByteArray())
+                out.flush()
+
+                // Read HTTP 200 CONNECT header
+                val headerBuf = ByteArrayOutputStream()
+                while (true) {
+                    val b = inp.read()
+                    if (b == -1) break
+                    headerBuf.write(b)
+                    val s = headerBuf.toString(StandardCharsets.ISO_8859_1.name())
+                    if (s.endsWith("\r\n\r\n")) break
+                }
+                assertTrue(headerBuf.toString(StandardCharsets.ISO_8859_1.name()).startsWith("HTTP/1.1 200"))
+
+                val readBuf = ByteArray(16_384)
+                while (true) {
+                    val n = inp.read(readBuf)
+                    if (n == -1) break
+                    receivedOut.write(readBuf, 0, n)
+                }
+            }
+        } finally {
+            proxy.close()
+            originThread.join(3_000)
+        }
+
+        assertEquals(totalBytes, receivedOut.size())
+        assertArrayEquals(sourcePattern, receivedOut.toByteArray())
     }
 
     private fun buildDnsAResponse(

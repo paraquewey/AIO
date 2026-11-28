@@ -126,17 +126,14 @@ class LocalSocks5Server(
 
             val activeTunnel = tunnel
             val upstreamJob = scope.launch {
-                val buf = ByteArray(65_536)
+                val buf = ByteArray(COPY_BUFFER_BYTES)
                 try {
                     while (isActive && running.get()) {
                         val n = input.read(buf)
                         if (n <= 0) break
                         activeTunnel.outputStream.write(buf, 0, n)
-                        if (input.available() == 0) {
-                            activeTunnel.outputStream.flush()
-                        }
+                        activeTunnel.outputStream.flush()
                     }
-                    runCatching { activeTunnel.outputStream.flush() }
                 } catch (_: Throwable) {
                 } finally {
                     activeTunnel.halfCloseOutput()
@@ -144,17 +141,14 @@ class LocalSocks5Server(
             }
 
             val downstreamJob = scope.launch {
-                val buf = ByteArray(65_536)
+                val buf = ByteArray(COPY_BUFFER_BYTES)
                 try {
                     while (isActive && running.get()) {
                         val n = activeTunnel.inputStream.read(buf)
                         if (n <= 0) break
                         output.write(buf, 0, n)
-                        if (activeTunnel.inputStream.available() == 0) {
-                            output.flush()
-                        }
+                        output.flush()
                     }
-                    runCatching { output.flush() }
                 } catch (_: Throwable) {
                 } finally {
                     runCatching { client.shutdownOutput() }
@@ -180,5 +174,6 @@ class LocalSocks5Server(
 
     companion object {
         private const val TAG = "LocalSocks5"
+        private const val COPY_BUFFER_BYTES = 16_384
     }
 }

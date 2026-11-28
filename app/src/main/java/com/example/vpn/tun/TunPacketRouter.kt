@@ -16,7 +16,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -26,6 +26,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.util.ArrayDeque
 import java.util.TreeMap
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -43,20 +44,22 @@ class TunPacketRouter(
     private val running = AtomicBoolean(false)
     private val outputStream = FileOutputStream(tunFd.fileDescriptor)
     private val inputStream = FileInputStream(tunFd.fileDescriptor)
+    private val tunOutputLock = Any()
     private val tcpSessions = ConcurrentHashMap<TcpFlowKey, TcpSession>()
     private val udpFlowClients = ConcurrentHashMap<UdpFlowKey, UdpClientEndpoints>()
 
-    // Dual-tier QoS channels (Fast-Lane <= 160 bytes vs Standard Bulk > 160 bytes)
-    private val priorityOutboundChannel = Channel<OutboundTask>(capacity = Channel.UNLIMITED)
-    private val standardOutboundChannel = Channel<OutboundTask>(capacity = Channel.UNLIMITED)
-    private val priorityTunWriteChannel = Channel<ByteArray>(capacity = Channel.UNLIMITED)
-    private val standardTunWriteChannel = Channel<ByteArray>(capacity = Channel.UNLIMITED)
+    // Dedicated fast-lane for UDP port 53 DNS queries; strictly ordered FIFO for all TCP & bulk UDP flows
+    private val dnsOutboundChannel = Channel<OutboundTask.DnsQuery>(capacity = Channel.UNLIMITED)
+    private val outboundChannel = Channel<OutboundTask>(capacity = Channel.UNLIMITED)
+
+    // Bounded FIFO TUN write queue providing real blocking backpressure to SSH channel readers (no packet drops)
+    private val tunWriteQueue = ArrayBlockingQueue<ByteArray>(TUN_WRITE_QUEUE_CAPACITY)
 
     @Volatile
     private var udpRelaySession: UdpRelaySession? = null
     private var udpReceiverJob: Job? = null
     private var readLoopJob: Job? = null
-    private var tunWriterJob: Job? = null
+    private var tunWriterThread: Thread? = null
     private val workerJobs = mutableListOf<Job>()
     private val seqSeed = AtomicLong(1_000_000L)
 
@@ -162,11 +165,11 @@ class TunPacketRouter(
         }
         AppLogger.info(
             TAG,
-            "DNS Forwarding activo sobre túnel (QoS Fast-Lane <= $PRIORITY_PACKET_THRESHOLD_BYTES B, DNS1=${dnsConfig.primaryDns}, DNS2=${dnsConfig.secondaryDns}, modo=${dnsConfig.dnsMode.name})"
+            "Router TUN FIFO activo (buf=${COPY_BUFFER_BYTES / 1024} KB, cola TUN=$TUN_WRITE_QUEUE_CAPACITY, DNS Fast-Lane UDP/53, DNS1=${dnsConfig.primaryDns}, DNS2=${dnsConfig.secondaryDns}, modo=${dnsConfig.dnsMode.name})"
         )
 
         startTunWriterLoop()
-        startPrioritizedOutboundWorkers()
+        startWorkers()
 
         scope.launch {
             val relay = runCatching { engine.openUdpRelay() }.getOrNull()
@@ -202,41 +205,61 @@ class TunPacketRouter(
     }
 
     private fun startTunWriterLoop() {
-        tunWriterJob?.cancel()
-        tunWriterJob = scope.launch {
-            while (isActive && running.get()) {
-                val pkt = priorityTunWriteChannel.tryReceive().getOrNull() ?: select<ByteArray?> {
-                    priorityTunWriteChannel.onReceiveCatching { it.getOrNull() }
-                    standardTunWriteChannel.onReceiveCatching { it.getOrNull() }
-                } ?: break
-
-                runCatching {
-                    outputStream.write(pkt)
+        tunWriterThread?.interrupt()
+        tunWriterThread = Thread({
+            while (running.get() && !Thread.currentThread().isInterrupted) {
+                val pkt = try {
+                    tunWriteQueue.take()
+                } catch (_: InterruptedException) {
+                    break
                 }
+                if (!running.get()) break
+                runCatching {
+                    writePacketToTun(pkt)
+                }
+            }
+        }, "AioTunWriter").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun writePacketToTun(packet: ByteArray) {
+        synchronized(tunOutputLock) {
+            outputStream.write(packet)
+            outputStream.flush()
+        }
+    }
+
+    private suspend fun enqueueTunWriteBlocking(packet: ByteArray) {
+        if (!running.get()) return
+        runInterruptible(Dispatchers.IO) {
+            if (running.get()) {
+                tunWriteQueue.put(packet)
             }
         }
     }
 
-    private fun enqueueTunWrite(packet: ByteArray, forcePriority: Boolean = false) {
-        if (!running.get()) return
-        if (forcePriority || packet.size <= PRIORITY_PACKET_THRESHOLD_BYTES) {
-            priorityTunWriteChannel.trySend(packet)
-        } else {
-            standardTunWriteChannel.trySend(packet)
-        }
-    }
-
-    private fun startPrioritizedOutboundWorkers() {
+    private fun startWorkers() {
         workerJobs.forEach { it.cancel() }
         workerJobs.clear()
+
+        // Dedicated fast-lane workers exclusively for UDP port 53 DNS queries
+        repeat(DNS_WORKER_COUNT) {
+            val dnsJob = scope.launch {
+                for (task in dnsOutboundChannel) {
+                    if (!isActive || !running.get()) break
+                    processDnsQuery(task)
+                }
+            }
+            workerJobs.add(dnsJob)
+        }
+
+        // Strict FIFO workers for TCP & non-DNS UDP flows
         repeat(OUTBOUND_WORKER_COUNT) {
             val job = scope.launch {
-                while (isActive && running.get()) {
-                    val task = priorityOutboundChannel.tryReceive().getOrNull() ?: select<OutboundTask?> {
-                        priorityOutboundChannel.onReceiveCatching { it.getOrNull() }
-                        standardOutboundChannel.onReceiveCatching { it.getOrNull() }
-                    } ?: break
-
+                for (task in outboundChannel) {
+                    if (!isActive || !running.get()) break
                     when (task) {
                         is OutboundTask.DnsQuery -> processDnsQuery(task)
                         is OutboundTask.UdpForward -> processUdpForward(task)
@@ -270,7 +293,8 @@ class TunPacketRouter(
                 dstPort = task.udpSrcPort,
                 payload = dnsResp
             )
-            enqueueTunWrite(replyPacket, forcePriority = true)
+            // DNS UDP/53 replies bypass bulk download queues to keep resolution snappy
+            runCatching { writePacketToTun(replyPacket) }
         }
     }
 
@@ -314,13 +338,13 @@ class TunPacketRouter(
                 flags = IpPacketParser.TCP_SYN or IpPacketParser.TCP_ACK,
                 mssOption = calculateTunMss()
             )
-            enqueueTunWrite(synAck, forcePriority = true)
+            enqueueTunWriteBlocking(synAck)
             startTunnelReader(session, tunnelStream)
 
             // Flush any early TCP payload that arrived before streamReady completed
             val hasPending = synchronized(session.stateLock) { session.pendingOutbound.isNotEmpty() || session.clientFinReceived }
             if (hasPending) {
-                scheduleTcpFlush(session, isSmallPriority = true)
+                scheduleTcpFlush(session)
             }
         } catch (e: Throwable) {
             session.streamReady.completeExceptionally(e)
@@ -334,7 +358,7 @@ class TunPacketRouter(
                 ackNum = initialAck,
                 flags = IpPacketParser.TCP_RST or IpPacketParser.TCP_ACK
             )
-            enqueueTunWrite(rst, forcePriority = true)
+            enqueueTunWriteBlocking(rst)
             closeSession(session.key)
         }
     }
@@ -346,17 +370,13 @@ class TunPacketRouter(
             session.streamWriteMutex.withLock {
                 while (!session.closed && running.get()) {
                     session.flushQueued.set(false)
-                    var totalWritten = 0L
                     while (!session.closed && running.get()) {
                         val chunk = synchronized(session.stateLock) {
                             session.pendingOutbound.pollFirst()
                         } ?: break
                         stream.outputStream.write(chunk)
-                        totalWritten += chunk.size
-                    }
-                    if (totalWritten > 0L) {
                         stream.outputStream.flush()
-                        statisticsManager.recordBytesSent(totalWritten)
+                        statisticsManager.recordBytesSent(chunk.size.toLong())
                     }
                     if (session.clientFinReceived && !session.halfClosedSent && !session.closed) {
                         val stillEmpty = synchronized(session.stateLock) { session.pendingOutbound.isEmpty() }
@@ -374,15 +394,10 @@ class TunPacketRouter(
         }
     }
 
-    private fun scheduleTcpFlush(session: TcpSession, isSmallPriority: Boolean) {
+    private fun scheduleTcpFlush(session: TcpSession) {
         if (session.closed || !running.get()) return
         if (!session.flushQueued.compareAndSet(false, true)) return
-        val task = OutboundTask.FlushTcp(session)
-        if (isSmallPriority) {
-            priorityOutboundChannel.trySend(task)
-        } else {
-            standardOutboundChannel.trySend(task)
-        }
+        outboundChannel.trySend(OutboundTask.FlushTcp(session))
     }
 
     private fun startUdpRelayReceiver(relay: UdpRelaySession) {
@@ -412,7 +427,7 @@ class TunPacketRouter(
                 )
                 statisticsManager.recordBytesReceived(pkt.length.toLong())
                 statisticsManager.recordPacketForwarded()
-                enqueueTunWrite(replyPacket)
+                enqueueTunWriteBlocking(replyPacket)
             }
         }
     }
@@ -424,29 +439,26 @@ class TunPacketRouter(
         statisticsManager.recordBytesSent(payload.size.toLong())
 
         if (udp.dstPort == 53) {
-            // DNS always enters Fast-Lane priority queue
-            priorityOutboundChannel.trySend(OutboundTask.DnsQuery(payload, ip, udp.srcPort))
+            // Priority fast-lane exclusively for UDP port 53 DNS queries
+            dnsOutboundChannel.trySend(OutboundTask.DnsQuery(payload, ip, udp.srcPort))
         } else {
             val relay = udpRelaySession ?: return
             val flowKey = UdpFlowKey(ip.srcIp, udp.srcPort)
             udpFlowClients.putIfAbsent(flowKey, UdpClientEndpoints(ip.srcIpBytes, udp.srcPort))
-            val task = OutboundTask.UdpForward(
-                relay = relay,
-                srcIp = ip.srcIp,
-                srcPort = udp.srcPort,
-                dstIp = ip.dstIp,
-                dstPort = udp.dstPort,
-                payload = payload
+            outboundChannel.trySend(
+                OutboundTask.UdpForward(
+                    relay = relay,
+                    srcIp = ip.srcIp,
+                    srcPort = udp.srcPort,
+                    dstIp = ip.dstIp,
+                    dstPort = udp.dstPort,
+                    payload = payload
+                )
             )
-            if (payload.size <= PRIORITY_PACKET_THRESHOLD_BYTES) {
-                priorityOutboundChannel.trySend(task)
-            } else {
-                standardOutboundChannel.trySend(task)
-            }
         }
     }
 
-    private fun handleTcpPacket(buffer: ByteArray, ip: IpPacketParser.Ipv4Packet) {
+    private suspend fun handleTcpPacket(buffer: ByteArray, ip: IpPacketParser.Ipv4Packet) {
         val tcp = IpPacketParser.parseTcp(buffer, ip) ?: return
         val key = TcpFlowKey(ip.srcIp, tcp.srcPort, ip.dstIp, tcp.dstPort)
         val isSyn = (tcp.flags and IpPacketParser.TCP_SYN) != 0
@@ -468,7 +480,7 @@ class TunPacketRouter(
                         flags = IpPacketParser.TCP_SYN or IpPacketParser.TCP_ACK,
                         mssOption = calculateTunMss()
                     )
-                    enqueueTunWrite(synAck, forcePriority = true)
+                    enqueueTunWriteBlocking(synAck)
                 }
                 return
             }
@@ -489,8 +501,7 @@ class TunPacketRouter(
             }
             tcpSessions[key] = session
             statisticsManager.setActiveTcpConnections(tcpSessions.size)
-            // TCP SYN handshakes always use Fast-Lane priority queue
-            priorityOutboundChannel.trySend(OutboundTask.OpenTcp(session, initialAck))
+            outboundChannel.trySend(OutboundTask.OpenTcp(session, initialAck))
             return
         }
 
@@ -545,7 +556,7 @@ class TunPacketRouter(
             }
 
             if (shouldFlush) {
-                scheduleTcpFlush(session, isSmallPriority = payload.size <= PRIORITY_PACKET_THRESHOLD_BYTES)
+                scheduleTcpFlush(session)
             }
             if (shouldAck) {
                 val ackPkt = IpPacketParser.buildIpv4TcpPacket(
@@ -557,7 +568,7 @@ class TunPacketRouter(
                     ackNum = ackNumForAck,
                     flags = IpPacketParser.TCP_ACK
                 )
-                enqueueTunWrite(ackPkt, forcePriority = true)
+                enqueueTunWriteBlocking(ackPkt)
             }
         }
 
@@ -575,7 +586,7 @@ class TunPacketRouter(
                 ackNumForFinAck = session.clientNextSeq
                 bothFinDone = session.serverFinSent && session.pendingOutbound.isEmpty()
             }
-            scheduleTcpFlush(session, isSmallPriority = true)
+            scheduleTcpFlush(session)
             val finAck = IpPacketParser.buildIpv4TcpPacket(
                 srcIpBytes = session.serverIpBytes,
                 dstIpBytes = session.clientIpBytes,
@@ -585,7 +596,7 @@ class TunPacketRouter(
                 ackNum = ackNumForFinAck,
                 flags = IpPacketParser.TCP_ACK
             )
-            enqueueTunWrite(finAck, forcePriority = true)
+            enqueueTunWriteBlocking(finAck)
             if (bothFinDone) {
                 closeSession(key)
             }
@@ -616,10 +627,12 @@ class TunPacketRouter(
     private fun startTunnelReader(session: TcpSession, stream: TunnelStream) {
         val mss = calculateTunMss()
         session.readerJob = scope.launch {
-            val readBuf = ByteArray(mss)
+            val readBuf = ByteArray(COPY_BUFFER_BYTES)
             try {
                 while (isActive && running.get() && !session.closed) {
-                    val n = stream.inputStream.read(readBuf)
+                    val n = runInterruptible(Dispatchers.IO) {
+                        stream.inputStream.read(readBuf)
+                    }
                     if (n == -1) {
                         var finPkt: ByteArray
                         var closeNow = false
@@ -637,7 +650,7 @@ class TunPacketRouter(
                             session.mySeq = (session.mySeq + 1L) and 0xFFFFFFFFL
                             closeNow = session.clientFinReceived
                         }
-                        enqueueTunWrite(finPkt, forcePriority = true)
+                        enqueueTunWriteBlocking(finPkt)
                         if (closeNow) {
                             closeSession(session.key)
                         }
@@ -645,31 +658,40 @@ class TunPacketRouter(
                     }
                     if (n > 0) {
                         statisticsManager.recordBytesReceived(n.toLong())
-                        var dataPkt: ByteArray
-                        synchronized(session.stateLock) {
-                            dataPkt = IpPacketParser.buildIpv4TcpPacket(
-                                srcIpBytes = session.serverIpBytes,
-                                dstIpBytes = session.clientIpBytes,
-                                srcPort = session.key.dstPort,
-                                dstPort = session.key.srcPort,
-                                seqNum = session.mySeq,
-                                ackNum = session.clientNextSeq,
-                                flags = IpPacketParser.TCP_PSH or IpPacketParser.TCP_ACK,
-                                payload = readBuf,
-                                payloadLength = n
-                            )
-                            session.mySeq = (session.mySeq + n.toLong()) and 0xFFFFFFFFL
+                        var offset = 0
+                        while (offset < n && isActive && running.get() && !session.closed) {
+                            val segLen = minOf(mss, n - offset)
+                            var dataPkt: ByteArray
+                            synchronized(session.stateLock) {
+                                dataPkt = IpPacketParser.buildIpv4TcpPacket(
+                                    srcIpBytes = session.serverIpBytes,
+                                    dstIpBytes = session.clientIpBytes,
+                                    srcPort = session.key.dstPort,
+                                    dstPort = session.key.srcPort,
+                                    seqNum = session.mySeq,
+                                    ackNum = session.clientNextSeq,
+                                    flags = IpPacketParser.TCP_PSH or IpPacketParser.TCP_ACK,
+                                    payload = readBuf,
+                                    payloadLength = segLen,
+                                    payloadOffset = offset
+                                )
+                                session.mySeq = (session.mySeq + segLen.toLong()) and 0xFFFFFFFFL
+                            }
+                            offset += segLen
+                            // Blocking put into bounded ArrayBlockingQueue(64) provides real SSH window backpressure
+                            enqueueTunWriteBlocking(dataPkt)
                         }
-                        enqueueTunWrite(dataPkt, forcePriority = n <= PRIORITY_PACKET_THRESHOLD_BYTES)
                     }
                 }
             } catch (_: Throwable) {
-                if (!session.closed) sendRstAndClose(session)
+                if (!session.closed && running.get()) {
+                    runCatching { sendRstAndClose(session) }
+                }
             }
         }
     }
 
-    private fun sendRstAndClose(session: TcpSession) {
+    private suspend fun sendRstAndClose(session: TcpSession) {
         val rst = synchronized(session.stateLock) {
             IpPacketParser.buildIpv4TcpPacket(
                 srcIpBytes = session.serverIpBytes,
@@ -681,7 +703,7 @@ class TunPacketRouter(
                 flags = IpPacketParser.TCP_RST or IpPacketParser.TCP_ACK
             )
         }
-        enqueueTunWrite(rst, forcePriority = true)
+        enqueueTunWriteBlocking(rst)
         closeSession(session.key)
     }
 
@@ -697,17 +719,17 @@ class TunPacketRouter(
     fun stop() {
         if (!running.compareAndSet(true, false)) return
         readLoopJob?.cancel()
-        tunWriterJob?.cancel()
+        tunWriterThread?.interrupt()
+        tunWriterThread = null
         workerJobs.forEach { it.cancel() }
         workerJobs.clear()
-        priorityOutboundChannel.close()
-        standardOutboundChannel.close()
-        priorityTunWriteChannel.close()
-        standardTunWriteChannel.close()
+        dnsOutboundChannel.close()
+        outboundChannel.close()
         udpReceiverJob?.cancel()
         tcpSessions.values.forEach { it.close() }
         tcpSessions.clear()
         udpFlowClients.clear()
+        tunWriteQueue.clear()
         statisticsManager.setActiveTcpConnections(0)
         runCatching { udpRelaySession?.close() }
         udpRelaySession = null
@@ -720,7 +742,9 @@ class TunPacketRouter(
 
     companion object {
         private const val TAG = "TunPacketRouter"
-        const val PRIORITY_PACKET_THRESHOLD_BYTES = 160
+        internal const val COPY_BUFFER_BYTES = 16_384
+        internal const val TUN_WRITE_QUEUE_CAPACITY = 64
+        private const val DNS_WORKER_COUNT = 4
         private const val OUTBOUND_WORKER_COUNT = 16
     }
 }

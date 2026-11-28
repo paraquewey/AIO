@@ -33,8 +33,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Local Wi-Fi / Hotspot / USB-CGNAT Proxy sharing server bound to 0.0.0.0:<port> (default 8080).
  * Supports SOCKS5 (0x05), HTTPS CONNECT, and plain HTTP forwarding on the same port.
- * Uses 64 KB stream buffers, smart flushing, 256 KB TCP socket buffers, and protected local
- * sockets for LAN/CGNAT bypass destinations (e.g. 192.168.x.x, 100.64.0.0/10).
+ * Uses 16 KB stream buffers, immediate flush() per read cycle, 256 KB TCP socket buffers, and
+ * protected local sockets for LAN/CGNAT bypass destinations (e.g. 192.168.x.x, 100.64.0.0/10).
  */
 class WifiShareProxyServer(
     private val listenPort: Int = 8080,
@@ -332,13 +332,10 @@ class WifiShareProxyServer(
                     val n = clientIn.read(buf)
                     if (n <= 0) break
                     tunnel.outputStream.write(buf, 0, n)
-                    if (clientIn.available() == 0) {
-                        tunnel.outputStream.flush()
-                    }
+                    tunnel.outputStream.flush()
                     statisticsManager?.recordBytesSent(n.toLong())
                     statisticsManager?.recordPacketForwarded()
                 }
-                runCatching { tunnel.outputStream.flush() }
             } catch (_: Throwable) {
             } finally {
                 tunnel.halfCloseOutput()
@@ -352,13 +349,10 @@ class WifiShareProxyServer(
                     val n = tunnel.inputStream.read(buf)
                     if (n <= 0) break
                     clientOut.write(buf, 0, n)
-                    if (tunnel.inputStream.available() == 0) {
-                        clientOut.flush()
-                    }
+                    clientOut.flush()
                     statisticsManager?.recordBytesReceived(n.toLong())
                     statisticsManager?.recordPacketForwarded()
                 }
-                runCatching { clientOut.flush() }
             } catch (_: Throwable) {
             } finally {
                 runCatching { client.shutdownOutput() }
@@ -509,8 +503,8 @@ class WifiShareProxyServer(
 
     companion object {
         private const val TAG = "WifiShareProxy"
-        private const val COPY_BUFFER_BYTES = 65_536
-        private const val SOCKET_BUFFER_BYTES = 256 * 1024
+        internal const val COPY_BUFFER_BYTES = 16_384
+        private const val SOCKET_BUFFER_BYTES = 262_144
         private const val HANDSHAKE_TIMEOUT_MS = 20_000
         private const val WAKE_LOCK_TAG = "AioTunnelVPN::WifiProxyWakeLock"
         private const val WIFI_LOCK_TAG = "AioTunnelVPN::WifiProxyLock"

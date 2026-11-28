@@ -119,6 +119,7 @@ object IpPacketParser {
         windowSize: Int = 65535,
         payload: ByteArray = ByteArray(0),
         payloadLength: Int = payload.size,
+        payloadOffset: Int = 0,
         mssOption: Int? = null
     ): ByteArray {
         val tcpHeaderLen = if (mssOption != null) 24 else 20
@@ -158,7 +159,7 @@ object IpPacketParser {
             buf.putShort(mssOption.coerceIn(512, 1460).toShort())
         }
         if (payloadLength > 0) {
-            buf.put(payload, 0, payloadLength)
+            buf.put(payload, payloadOffset, payloadLength)
         }
 
         val tcpChecksum = computeTransportChecksum(

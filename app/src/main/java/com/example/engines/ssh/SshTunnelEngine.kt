@@ -126,6 +126,8 @@ class SshTunnelEngine(
                     configureSession(jSession, profile.serverMessageMode, profile.jumpHost, profile.jumpPort)
                     AppLogger.info(TAG, "Conectando Jump Host SSH ${profile.jumpHost}:${profile.jumpPort} (timeout=${timeoutMs} ms)...")
                     jSession.connect(timeoutMs)
+                    jSession.serverAliveInterval = SSH_SERVER_ALIVE_INTERVAL_MS
+                    jSession.serverAliveCountMax = SSH_SERVER_ALIVE_COUNT_MAX
                     jumpSession = jSession
                     forwardedLocalPort = jSession.setPortForwardingL("127.0.0.1", 0, profile.host, profile.port)
                     AppLogger.info(TAG, "Túnel Jump Host activo en loopback:$forwardedLocalPort")
@@ -164,8 +166,8 @@ class SshTunnelEngine(
 
                 AppLogger.info(TAG, "Autenticando sesión SSH contra ${profile.host}:${profile.port} (timeout=${timeoutMs} ms)...")
                 session.connect(timeoutMs)
-                session.serverAliveInterval = 25_000
-                session.serverAliveCountMax = 3
+                session.serverAliveInterval = SSH_SERVER_ALIVE_INTERVAL_MS
+                session.serverAliveCountMax = SSH_SERVER_ALIVE_COUNT_MAX
                 primarySession = session
                 activeProfile = profile
 
@@ -294,6 +296,8 @@ class SshTunnelEngine(
         config["compression.s2c"] = "none"
         config["compression.c2s"] = "none"
         session.setConfig(config)
+        session.serverAliveInterval = SSH_SERVER_ALIVE_INTERVAL_MS
+        session.serverAliveCountMax = SSH_SERVER_ALIVE_COUNT_MAX
         session.userInfo = object : UserInfo {
             override fun getPassphrase(): String? = null
             override fun getPassword(): String? = null
@@ -423,7 +427,7 @@ class SshTunnelEngine(
             )
             try {
                 if (profile.rawHttpPayload.isNotEmpty()) {
-                    val bufferedIn = BufferedInputStream(socket.getInputStream(), 65_536)
+                    val bufferedIn = BufferedInputStream(socket.getInputStream(), HANDSHAKE_BUFFER_BYTES)
                     val statusLine = RawTcpPayloadExecutor.executeRawPayloadHandshake(
                         socket = socket,
                         bufferedIn = bufferedIn,
@@ -481,8 +485,11 @@ class SshTunnelEngine(
     companion object {
         private const val TAG = "SshTunnelEngine"
         private const val CONNECT_TIMEOUT_MS = 12_000
-        private const val SSH_LOCAL_WINDOW_BYTES = 2 * 1024 * 1024
-        private const val SSH_LOCAL_PACKET_BYTES = 32_768
-        private const val SOCKET_BUFFER_BYTES = 256 * 1024
+        internal const val SSH_LOCAL_WINDOW_BYTES = 262_144
+        internal const val SSH_LOCAL_PACKET_BYTES = 32_768
+        internal const val SSH_SERVER_ALIVE_INTERVAL_MS = 15_000
+        private const val SSH_SERVER_ALIVE_COUNT_MAX = 3
+        private const val HANDSHAKE_BUFFER_BYTES = 16_384
+        private const val SOCKET_BUFFER_BYTES = 262_144
     }
 }

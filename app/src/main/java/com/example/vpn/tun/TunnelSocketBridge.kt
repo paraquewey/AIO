@@ -114,13 +114,10 @@ class TunnelSocketBridge(
                         if (n <= 0) break
                         synchronized(writeLock) {
                             stream.outputStream.write(buf, 0, n)
-                            if (peerIn.available() == 0) {
-                                stream.outputStream.flush()
-                            }
+                            stream.outputStream.flush()
                         }
                     }
                     synchronized(writeLock) {
-                        runCatching { stream.outputStream.flush() }
                         stream.halfCloseOutput()
                     }
                 } catch (_: Throwable) {
@@ -139,11 +136,8 @@ class TunnelSocketBridge(
                         }
                         if (n <= 0) break
                         peerOut.write(buf, 0, n)
-                        if (stream.inputStream.available() == 0) {
-                            peerOut.flush()
-                        }
+                        peerOut.flush()
                     }
-                    runCatching { peerOut.flush() }
                     runCatching { peerSocket.shutdownOutput() }
                 } catch (_: Throwable) {
                 } finally {
@@ -247,7 +241,7 @@ class TunnelSocketBridge(
 
     companion object {
         private const val DEFAULT_CONNECT_TIMEOUT_MS = 5_000
-        private const val COPY_BUFFER_BYTES = 32 * 1024
-        private const val SOCKET_BUFFER_BYTES = 256 * 1024
+        private const val COPY_BUFFER_BYTES = 16_384
+        private const val SOCKET_BUFFER_BYTES = 262_144
     }
 }
