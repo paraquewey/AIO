@@ -4,9 +4,13 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -20,26 +24,121 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.domain.models.SshHostKeyChallenge
+import com.example.domain.models.TextureScaleMode
 import com.example.domain.models.TunnelProtocol
+import com.example.ui.theme.LocalAioUiStyle
 import com.example.ui.theme.SpaceAmber
 import com.example.ui.theme.SpaceCoral
 import com.example.ui.theme.SpaceCyan
 import com.example.ui.theme.SpaceEmerald
+import com.example.ui.theme.TextureOverlayLayer
+import com.example.ui.theme.TextureSlot
+
+@Composable
+fun AioActionButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    containerColor: Color = MaterialTheme.colorScheme.primary,
+    contentColor: Color = MaterialTheme.colorScheme.onPrimary,
+    shape: Shape = RoundedCornerShape(50),
+    contentPadding: PaddingValues = ButtonDefaults.ContentPadding,
+    content: @Composable RowScope.() -> Unit
+) {
+    val uiStyle = LocalAioUiStyle.current
+    val resolvedContainer = if (enabled) {
+        containerColor
+    } else {
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+    }
+    val resolvedContent = if (enabled) {
+        contentColor
+    } else {
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+    }
+
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = shape,
+        color = resolvedContainer,
+        contentColor = resolvedContent,
+        modifier = modifier
+            .defaultMinSize(minWidth = 64.dp, minHeight = 48.dp)
+            .semantics { role = Role.Button }
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            if (enabled) {
+                TextureOverlayLayer(
+                    texturePath = uiStyle.actionButtonTexturePath,
+                    textureVersion = uiStyle.actionButtonTextureVersion,
+                    textureAlpha = uiStyle.actionButtonTextureAlpha,
+                    scaleMode = TextureScaleMode.CROP,
+                    maxDimensionPx = TextureSlot.ACTION_BUTTON.maxDimensionPx,
+                    isLightForeground = uiStyle.isLightForeground,
+                    modifier = Modifier.matchParentSize()
+                )
+            }
+            CompositionLocalProvider(LocalContentColor provides resolvedContent) {
+                ProvideTextStyle(value = MaterialTheme.typography.labelLarge) {
+                    Row(
+                        modifier = Modifier.padding(contentPadding),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                        content = content
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TexturedNavContainer(
+    modifier: Modifier = Modifier,
+    backgroundColor: Color = LocalAioUiStyle.current.cardElevatedColor,
+    content: @Composable BoxScope.() -> Unit
+) {
+    val uiStyle = LocalAioUiStyle.current
+    Box(
+        modifier = modifier.background(backgroundColor)
+    ) {
+        TextureOverlayLayer(
+            texturePath = uiStyle.navBarTexturePath,
+            textureVersion = uiStyle.navBarTextureVersion,
+            textureAlpha = uiStyle.navBarTextureAlpha,
+            scaleMode = TextureScaleMode.CROP,
+            maxDimensionPx = TextureSlot.NAV_BAR.maxDimensionPx,
+            isLightForeground = uiStyle.isLightForeground,
+            modifier = Modifier.matchParentSize()
+        )
+        content()
+    }
+}
 
 @Composable
 fun ProtocolBadge(protocol: TunnelProtocol, modifier: Modifier = Modifier) {
+    val uiStyle = LocalAioUiStyle.current
     val accent = when {
         !protocol.isBuiltInEngine -> SpaceAmber
         protocol == TunnelProtocol.SSH || protocol == TunnelProtocol.SSH_JUMP -> SpaceEmerald
@@ -55,7 +154,9 @@ fun ProtocolBadge(protocol: TunnelProtocol, modifier: Modifier = Modifier) {
     ) {
         Text(
             text = protocol.badgeCode,
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.labelMedium.copy(
+                fontFamily = uiStyle.terminalFontFamily
+            ),
             color = accent,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
         )
@@ -64,6 +165,7 @@ fun ProtocolBadge(protocol: TunnelProtocol, modifier: Modifier = Modifier) {
 
 @Composable
 fun LatencyPill(latencyMs: Long?, modifier: Modifier = Modifier) {
+    val uiStyle = LocalAioUiStyle.current
     val (label, color) = when {
         latencyMs == null -> "Sin medir" to MaterialTheme.colorScheme.onSurfaceVariant
         latencyMs < 120 -> "$latencyMs ms" to SpaceEmerald
@@ -86,7 +188,9 @@ fun LatencyPill(latencyMs: Long?, modifier: Modifier = Modifier) {
         Spacer(Modifier.width(6.dp))
         Text(
             text = label,
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.labelMedium.copy(
+                fontFamily = uiStyle.terminalFontFamily
+            ),
             color = color,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis

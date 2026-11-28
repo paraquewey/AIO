@@ -11,6 +11,12 @@ enum class FontColorMode(val label: String) {
     FORCED_BLACK("Negro")
 }
 
+enum class TextureScaleMode(val label: String) {
+    CROP("Ajustar"),
+    FILL("Rellenar"),
+    TILE("Mosaico")
+}
+
 enum class NetworkPreset(val label: String, val subtitle: String) {
     BALANCED("Equilibrado (Recomendado)", "16 KB buf · 256 KB SSH · 24 canales · Cola 64 · SWR"),
     MAX_STABILITY("Máxima Estabilidad", "8 KB buf · 128 KB SSH · 16 canales · Cola 48 · Keep-Alive 10s"),
@@ -66,13 +72,37 @@ data class AppSettings(
     val strictTlsVerification: Boolean = true,
     val verboseDebugLogs: Boolean = false,
     val wakeLockEnabled: Boolean = true,
-    // UI Personalization
+    // UI Personalization - Phase 1 (Background & Colors)
     val fontColorMode: FontColorMode = FontColorMode.ADAPTIVE,
     val customBackgroundPath: String? = null,
     val customBackgroundLuminance: Float = 0.04f,
     val customBackgroundVersion: Long = 0L,
     val backgroundDimmerAlpha: Float = 0.35f,
     val primaryAccentArgb: Long = 0xFF7B61FFL,
+    // UI Personalization - Phase 2 (Component Textures)
+    val cardTexturePath: String? = null,
+    val cardTextureMode: TextureScaleMode = TextureScaleMode.CROP,
+    val cardTextureAlpha: Float = 0.45f,
+    val cardTextureVersion: Long = 0L,
+    val heroButtonTexturePath: String? = null,
+    val heroButtonTextureAlpha: Float = 0.65f,
+    val heroButtonTextureVersion: Long = 0L,
+    val actionButtonTexturePath: String? = null,
+    val actionButtonTextureAlpha: Float = 0.55f,
+    val actionButtonTextureVersion: Long = 0L,
+    val navBarTexturePath: String? = null,
+    val navBarTextureAlpha: Float = 0.60f,
+    val navBarTextureVersion: Long = 0L,
+    // UI Personalization - Phase 2 (Granular Typography)
+    val titleFontPath: String? = null,
+    val titleFontScale: Float = 1.0f,
+    val titleFontVersion: Long = 0L,
+    val bodyFontPath: String? = null,
+    val bodyFontScale: Float = 1.0f,
+    val bodyFontVersion: Long = 0L,
+    val terminalFontPath: String? = null,
+    val terminalFontScale: Float = 1.0f,
+    val terminalFontVersion: Long = 0L,
     // Advanced Engine & Performance Tuning
     val networkPreset: NetworkPreset = NetworkPreset.BALANCED,
     val transferBufferKb: Int = 16,
@@ -159,5 +189,37 @@ data class AppSettings(
     fun restoreOptimalEngineDefaults(): AppSettings = applyNetworkPreset(NetworkPreset.BALANCED).copy(
         bypassLan = true,
         strictTlsVerification = true
+    )
+
+    fun restoreFactoryUiDefaults(): AppSettings = copy(
+        useLightTheme = false,
+        fontColorMode = FontColorMode.ADAPTIVE,
+        customBackgroundPath = null,
+        customBackgroundLuminance = 0.04f,
+        customBackgroundVersion = 0L,
+        backgroundDimmerAlpha = 0.35f,
+        primaryAccentArgb = 0xFF7B61FFL,
+        cardTexturePath = null,
+        cardTextureMode = TextureScaleMode.CROP,
+        cardTextureAlpha = 0.45f,
+        cardTextureVersion = 0L,
+        heroButtonTexturePath = null,
+        heroButtonTextureAlpha = 0.65f,
+        heroButtonTextureVersion = 0L,
+        actionButtonTexturePath = null,
+        actionButtonTextureAlpha = 0.55f,
+        actionButtonTextureVersion = 0L,
+        navBarTexturePath = null,
+        navBarTextureAlpha = 0.60f,
+        navBarTextureVersion = 0L,
+        titleFontPath = null,
+        titleFontScale = 1.0f,
+        titleFontVersion = 0L,
+        bodyFontPath = null,
+        bodyFontScale = 1.0f,
+        bodyFontVersion = 0L,
+        terminalFontPath = null,
+        terminalFontScale = 1.0f,
+        terminalFontVersion = 0L
     )
 }

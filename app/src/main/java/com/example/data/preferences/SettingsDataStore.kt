@@ -15,6 +15,7 @@ import com.example.domain.models.AppSettings
 import com.example.domain.models.DnsMode
 import com.example.domain.models.FontColorMode
 import com.example.domain.models.NetworkPreset
+import com.example.domain.models.TextureScaleMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -44,13 +45,39 @@ class SettingsDataStore(private val context: Context) {
         val VERBOSE_LOGS = booleanPreferencesKey("verbose_logs")
         val WAKE_LOCK_ENABLED = booleanPreferencesKey("wake_lock_enabled")
 
-        // UI Personalization
+        // UI Personalization - Phase 1
         val FONT_COLOR_MODE = stringPreferencesKey("font_color_mode")
         val CUSTOM_BG_PATH = stringPreferencesKey("custom_bg_path")
         val CUSTOM_BG_LUMINANCE = floatPreferencesKey("custom_bg_luminance")
         val CUSTOM_BG_VERSION = longPreferencesKey("custom_bg_version")
         val BG_DIMMER_ALPHA = floatPreferencesKey("bg_dimmer_alpha")
         val PRIMARY_ACCENT_ARGB = longPreferencesKey("primary_accent_argb")
+
+        // UI Personalization - Phase 2 (Textures)
+        val CARD_TEXTURE_PATH = stringPreferencesKey("card_texture_path")
+        val CARD_TEXTURE_MODE = stringPreferencesKey("card_texture_mode")
+        val CARD_TEXTURE_ALPHA = floatPreferencesKey("card_texture_alpha")
+        val CARD_TEXTURE_VERSION = longPreferencesKey("card_texture_version")
+        val HERO_BUTTON_TEXTURE_PATH = stringPreferencesKey("hero_button_texture_path")
+        val HERO_BUTTON_TEXTURE_ALPHA = floatPreferencesKey("hero_button_texture_alpha")
+        val HERO_BUTTON_TEXTURE_VERSION = longPreferencesKey("hero_button_texture_version")
+        val ACTION_BUTTON_TEXTURE_PATH = stringPreferencesKey("action_button_texture_path")
+        val ACTION_BUTTON_TEXTURE_ALPHA = floatPreferencesKey("action_button_texture_alpha")
+        val ACTION_BUTTON_TEXTURE_VERSION = longPreferencesKey("action_button_texture_version")
+        val NAV_BAR_TEXTURE_PATH = stringPreferencesKey("nav_bar_texture_path")
+        val NAV_BAR_TEXTURE_ALPHA = floatPreferencesKey("nav_bar_texture_alpha")
+        val NAV_BAR_TEXTURE_VERSION = longPreferencesKey("nav_bar_texture_version")
+
+        // UI Personalization - Phase 2 (Fonts)
+        val TITLE_FONT_PATH = stringPreferencesKey("title_font_path")
+        val TITLE_FONT_SCALE = floatPreferencesKey("title_font_scale")
+        val TITLE_FONT_VERSION = longPreferencesKey("title_font_version")
+        val BODY_FONT_PATH = stringPreferencesKey("body_font_path")
+        val BODY_FONT_SCALE = floatPreferencesKey("body_font_scale")
+        val BODY_FONT_VERSION = longPreferencesKey("body_font_version")
+        val TERMINAL_FONT_PATH = stringPreferencesKey("terminal_font_path")
+        val TERMINAL_FONT_SCALE = floatPreferencesKey("terminal_font_scale")
+        val TERMINAL_FONT_VERSION = longPreferencesKey("terminal_font_version")
 
         // Advanced Engine & Performance Tuning
         val NETWORK_PRESET = stringPreferencesKey("network_preset")
@@ -98,6 +125,30 @@ class SettingsDataStore(private val context: Context) {
         customBackgroundVersion = prefs[Keys.CUSTOM_BG_VERSION] ?: 0L,
         backgroundDimmerAlpha = (prefs[Keys.BG_DIMMER_ALPHA] ?: 0.35f).coerceIn(0f, 0.85f),
         primaryAccentArgb = prefs[Keys.PRIMARY_ACCENT_ARGB] ?: 0xFF7B61FFL,
+        cardTexturePath = prefs[Keys.CARD_TEXTURE_PATH]?.takeIf { it.isNotBlank() },
+        cardTextureMode = prefs[Keys.CARD_TEXTURE_MODE]?.let {
+            runCatching { TextureScaleMode.valueOf(it) }.getOrNull()
+        } ?: TextureScaleMode.CROP,
+        cardTextureAlpha = (prefs[Keys.CARD_TEXTURE_ALPHA] ?: 0.45f).coerceIn(0f, 1f),
+        cardTextureVersion = prefs[Keys.CARD_TEXTURE_VERSION] ?: 0L,
+        heroButtonTexturePath = prefs[Keys.HERO_BUTTON_TEXTURE_PATH]?.takeIf { it.isNotBlank() },
+        heroButtonTextureAlpha = (prefs[Keys.HERO_BUTTON_TEXTURE_ALPHA] ?: 0.65f).coerceIn(0f, 1f),
+        heroButtonTextureVersion = prefs[Keys.HERO_BUTTON_TEXTURE_VERSION] ?: 0L,
+        actionButtonTexturePath = prefs[Keys.ACTION_BUTTON_TEXTURE_PATH]?.takeIf { it.isNotBlank() },
+        actionButtonTextureAlpha = (prefs[Keys.ACTION_BUTTON_TEXTURE_ALPHA] ?: 0.55f).coerceIn(0f, 1f),
+        actionButtonTextureVersion = prefs[Keys.ACTION_BUTTON_TEXTURE_VERSION] ?: 0L,
+        navBarTexturePath = prefs[Keys.NAV_BAR_TEXTURE_PATH]?.takeIf { it.isNotBlank() },
+        navBarTextureAlpha = (prefs[Keys.NAV_BAR_TEXTURE_ALPHA] ?: 0.60f).coerceIn(0f, 1f),
+        navBarTextureVersion = prefs[Keys.NAV_BAR_TEXTURE_VERSION] ?: 0L,
+        titleFontPath = prefs[Keys.TITLE_FONT_PATH]?.takeIf { it.isNotBlank() },
+        titleFontScale = (prefs[Keys.TITLE_FONT_SCALE] ?: 1.0f).coerceIn(0.80f, 1.35f),
+        titleFontVersion = prefs[Keys.TITLE_FONT_VERSION] ?: 0L,
+        bodyFontPath = prefs[Keys.BODY_FONT_PATH]?.takeIf { it.isNotBlank() },
+        bodyFontScale = (prefs[Keys.BODY_FONT_SCALE] ?: 1.0f).coerceIn(0.80f, 1.35f),
+        bodyFontVersion = prefs[Keys.BODY_FONT_VERSION] ?: 0L,
+        terminalFontPath = prefs[Keys.TERMINAL_FONT_PATH]?.takeIf { it.isNotBlank() },
+        terminalFontScale = (prefs[Keys.TERMINAL_FONT_SCALE] ?: 1.0f).coerceIn(0.80f, 1.35f),
+        terminalFontVersion = prefs[Keys.TERMINAL_FONT_VERSION] ?: 0L,
         networkPreset = prefs[Keys.NETWORK_PRESET]?.let {
             runCatching { NetworkPreset.valueOf(it) }.getOrNull()
         } ?: NetworkPreset.BALANCED,
@@ -133,6 +184,13 @@ class SettingsDataStore(private val context: Context) {
                 wifiProxySharePort = rawUpdated.wifiProxySharePort.coerceIn(1024, 65535),
                 customBackgroundLuminance = rawUpdated.customBackgroundLuminance.coerceIn(0f, 1f),
                 backgroundDimmerAlpha = rawUpdated.backgroundDimmerAlpha.coerceIn(0f, 0.85f),
+                cardTextureAlpha = rawUpdated.cardTextureAlpha.coerceIn(0f, 1f),
+                heroButtonTextureAlpha = rawUpdated.heroButtonTextureAlpha.coerceIn(0f, 1f),
+                actionButtonTextureAlpha = rawUpdated.actionButtonTextureAlpha.coerceIn(0f, 1f),
+                navBarTextureAlpha = rawUpdated.navBarTextureAlpha.coerceIn(0f, 1f),
+                titleFontScale = rawUpdated.titleFontScale.coerceIn(0.80f, 1.35f),
+                bodyFontScale = rawUpdated.bodyFontScale.coerceIn(0.80f, 1.35f),
+                terminalFontScale = rawUpdated.terminalFontScale.coerceIn(0.80f, 1.35f),
                 transferBufferKb = rawUpdated.transferBufferKb.takeIf { it in ALLOWED_BUFFER_KB } ?: 16,
                 sshWindowKb = rawUpdated.sshWindowKb.takeIf { it in ALLOWED_SSH_WINDOW_KB } ?: 256,
                 sshKeepAliveSeconds = rawUpdated.sshKeepAliveSeconds.coerceIn(5, 60),
@@ -158,15 +216,41 @@ class SettingsDataStore(private val context: Context) {
             prefs[Keys.VERBOSE_LOGS] = updated.verboseDebugLogs
             prefs[Keys.WAKE_LOCK_ENABLED] = updated.wakeLockEnabled
             prefs[Keys.FONT_COLOR_MODE] = updated.fontColorMode.name
-            if (updated.customBackgroundPath.isNullOrBlank()) {
-                prefs.remove(Keys.CUSTOM_BG_PATH)
-            } else {
-                prefs[Keys.CUSTOM_BG_PATH] = updated.customBackgroundPath
-            }
+            setOptionalPath(prefs, Keys.CUSTOM_BG_PATH, updated.customBackgroundPath)
             prefs[Keys.CUSTOM_BG_LUMINANCE] = updated.customBackgroundLuminance
             prefs[Keys.CUSTOM_BG_VERSION] = updated.customBackgroundVersion
             prefs[Keys.BG_DIMMER_ALPHA] = updated.backgroundDimmerAlpha
             prefs[Keys.PRIMARY_ACCENT_ARGB] = updated.primaryAccentArgb
+
+            setOptionalPath(prefs, Keys.CARD_TEXTURE_PATH, updated.cardTexturePath)
+            prefs[Keys.CARD_TEXTURE_MODE] = updated.cardTextureMode.name
+            prefs[Keys.CARD_TEXTURE_ALPHA] = updated.cardTextureAlpha
+            prefs[Keys.CARD_TEXTURE_VERSION] = updated.cardTextureVersion
+
+            setOptionalPath(prefs, Keys.HERO_BUTTON_TEXTURE_PATH, updated.heroButtonTexturePath)
+            prefs[Keys.HERO_BUTTON_TEXTURE_ALPHA] = updated.heroButtonTextureAlpha
+            prefs[Keys.HERO_BUTTON_TEXTURE_VERSION] = updated.heroButtonTextureVersion
+
+            setOptionalPath(prefs, Keys.ACTION_BUTTON_TEXTURE_PATH, updated.actionButtonTexturePath)
+            prefs[Keys.ACTION_BUTTON_TEXTURE_ALPHA] = updated.actionButtonTextureAlpha
+            prefs[Keys.ACTION_BUTTON_TEXTURE_VERSION] = updated.actionButtonTextureVersion
+
+            setOptionalPath(prefs, Keys.NAV_BAR_TEXTURE_PATH, updated.navBarTexturePath)
+            prefs[Keys.NAV_BAR_TEXTURE_ALPHA] = updated.navBarTextureAlpha
+            prefs[Keys.NAV_BAR_TEXTURE_VERSION] = updated.navBarTextureVersion
+
+            setOptionalPath(prefs, Keys.TITLE_FONT_PATH, updated.titleFontPath)
+            prefs[Keys.TITLE_FONT_SCALE] = updated.titleFontScale
+            prefs[Keys.TITLE_FONT_VERSION] = updated.titleFontVersion
+
+            setOptionalPath(prefs, Keys.BODY_FONT_PATH, updated.bodyFontPath)
+            prefs[Keys.BODY_FONT_SCALE] = updated.bodyFontScale
+            prefs[Keys.BODY_FONT_VERSION] = updated.bodyFontVersion
+
+            setOptionalPath(prefs, Keys.TERMINAL_FONT_PATH, updated.terminalFontPath)
+            prefs[Keys.TERMINAL_FONT_SCALE] = updated.terminalFontScale
+            prefs[Keys.TERMINAL_FONT_VERSION] = updated.terminalFontVersion
+
             prefs[Keys.NETWORK_PRESET] = updated.networkPreset.name
             prefs[Keys.TRANSFER_BUFFER_KB] = updated.transferBufferKb
             prefs[Keys.IMMEDIATE_FLUSH] = updated.immediateFlush
@@ -179,6 +263,14 @@ class SettingsDataStore(private val context: Context) {
             prefs[Keys.TUN_QUEUE_CAPACITY] = updated.tunQueueCapacity
             prefs[Keys.SMART_DNS_CACHE_ENABLED] = updated.smartDnsCacheEnabled
         }
+    }
+
+    private fun setOptionalPath(
+        prefs: androidx.datastore.preferences.core.MutablePreferences,
+        key: Preferences.Key<String>,
+        path: String?
+    ) {
+        if (path.isNullOrBlank()) prefs.remove(key) else prefs[key] = path
     }
 
     companion object {

@@ -68,6 +68,7 @@ import com.example.domain.models.ConnectionState
 import com.example.presentation.analysis.AnalysisScreen
 import com.example.presentation.components.SpaceGlassBackground
 import com.example.presentation.components.SshHostKeyDialog
+import com.example.presentation.components.TexturedNavContainer
 import com.example.presentation.configs.ConfigsScreen
 import com.example.presentation.configs.ProfileEditorScreen
 import com.example.presentation.dashboard.DashboardScreen
@@ -212,7 +213,30 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
         primaryAccent = primaryAccent,
         fontColorMode = settings.fontColorMode,
         effectiveBackgroundLuminance = effectiveLuminance,
-        hasCustomBackground = hasCustomBg
+        hasCustomBackground = hasCustomBg,
+        cardTexturePath = settings.cardTexturePath,
+        cardTextureMode = settings.cardTextureMode,
+        cardTextureAlpha = settings.cardTextureAlpha,
+        cardTextureVersion = settings.cardTextureVersion,
+        heroButtonTexturePath = settings.heroButtonTexturePath,
+        heroButtonTextureAlpha = settings.heroButtonTextureAlpha,
+        heroButtonTextureVersion = settings.heroButtonTextureVersion,
+        actionButtonTexturePath = settings.actionButtonTexturePath,
+        actionButtonTextureAlpha = settings.actionButtonTextureAlpha,
+        actionButtonTextureVersion = settings.actionButtonTextureVersion,
+        navBarTexturePath = settings.navBarTexturePath,
+        navBarTextureAlpha = settings.navBarTextureAlpha,
+        navBarTextureVersion = settings.navBarTextureVersion,
+        titleFontPath = settings.titleFontPath,
+        titleFontScale = settings.titleFontScale,
+        titleFontVersion = settings.titleFontVersion,
+        bodyFontPath = settings.bodyFontPath,
+        bodyFontScale = settings.bodyFontScale,
+        bodyFontVersion = settings.bodyFontVersion,
+        terminalFontPath = settings.terminalFontPath,
+        terminalFontScale = settings.terminalFontScale,
+        terminalFontVersion = settings.terminalFontVersion,
+        onFontWarning = { warning -> viewModel.postMessage(warning) }
     ) {
         val navController = rememberNavController()
         val backStackEntry by navController.currentBackStackEntryAsState()
@@ -255,32 +279,34 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
                     snackbarHost = { SnackbarHost(snackbarHostState) },
                     bottomBar = {
                         if (!useNavRail && !isSubScreen) {
-                            NavigationBar(
-                                windowInsets = WindowInsets.navigationBars,
-                                containerColor = navBarColor,
-                                contentColor = MaterialTheme.colorScheme.onSurface
-                            ) {
-                                topDestinations.forEach { dest ->
-                                    val selected = currentDestination?.hasRoute(dest.route::class) == true
-                                    NavigationBarItem(
-                                        selected = selected,
-                                        onClick = { navigateTopLevel(dest.route) },
-                                        icon = {
-                                            Icon(
-                                                imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
-                                                contentDescription = dest.label
-                                            )
-                                        },
-                                        label = { Text(dest.label, maxLines = 1) },
-                                        colors = NavigationBarItemDefaults.colors(
-                                            selectedIconColor = SpaceEmerald,
-                                            selectedTextColor = SpaceEmerald,
-                                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            indicatorColor = activeAccent.copy(alpha = 0.22f)
-                                        ),
-                                        modifier = Modifier.testTag(dest.testTag)
-                                    )
+                            TexturedNavContainer(backgroundColor = navBarColor) {
+                                NavigationBar(
+                                    windowInsets = WindowInsets.navigationBars,
+                                    containerColor = Color.Transparent,
+                                    contentColor = MaterialTheme.colorScheme.onSurface
+                                ) {
+                                    topDestinations.forEach { dest ->
+                                        val selected = currentDestination?.hasRoute(dest.route::class) == true
+                                        NavigationBarItem(
+                                            selected = selected,
+                                            onClick = { navigateTopLevel(dest.route) },
+                                            icon = {
+                                                Icon(
+                                                    imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
+                                                    contentDescription = dest.label
+                                                )
+                                            },
+                                            label = { Text(dest.label, maxLines = 1) },
+                                            colors = NavigationBarItemDefaults.colors(
+                                                selectedIconColor = SpaceEmerald,
+                                                selectedTextColor = SpaceEmerald,
+                                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                indicatorColor = activeAccent.copy(alpha = 0.22f)
+                                            ),
+                                            modifier = Modifier.testTag(dest.testTag)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -292,31 +318,33 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
                             .padding(innerPadding)
                     ) {
                         if (useNavRail && !isSubScreen) {
-                            NavigationRail(
-                                containerColor = navBarColor,
-                                contentColor = MaterialTheme.colorScheme.onSurface
-                            ) {
-                                topDestinations.forEach { dest ->
-                                    val selected = currentDestination?.hasRoute(dest.route::class) == true
-                                    NavigationRailItem(
-                                        selected = selected,
-                                        onClick = { navigateTopLevel(dest.route) },
-                                        icon = {
-                                            Icon(
-                                                imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
-                                                contentDescription = dest.label
-                                            )
-                                        },
-                                        label = { Text(dest.label) },
-                                        colors = NavigationRailItemDefaults.colors(
-                                            selectedIconColor = SpaceEmerald,
-                                            selectedTextColor = SpaceEmerald,
-                                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            indicatorColor = activeAccent.copy(alpha = 0.22f)
-                                        ),
-                                        modifier = Modifier.testTag(dest.testTag)
-                                    )
+                            TexturedNavContainer(backgroundColor = navBarColor) {
+                                NavigationRail(
+                                    containerColor = Color.Transparent,
+                                    contentColor = MaterialTheme.colorScheme.onSurface
+                                ) {
+                                    topDestinations.forEach { dest ->
+                                        val selected = currentDestination?.hasRoute(dest.route::class) == true
+                                        NavigationRailItem(
+                                            selected = selected,
+                                            onClick = { navigateTopLevel(dest.route) },
+                                            icon = {
+                                                Icon(
+                                                    imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
+                                                    contentDescription = dest.label
+                                                )
+                                            },
+                                            label = { Text(dest.label) },
+                                            colors = NavigationRailItemDefaults.colors(
+                                                selectedIconColor = SpaceEmerald,
+                                                selectedTextColor = SpaceEmerald,
+                                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                indicatorColor = activeAccent.copy(alpha = 0.22f)
+                                            ),
+                                            modifier = Modifier.testTag(dest.testTag)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -413,6 +441,13 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
                                         onUpdateSettings = { viewModel.updateSettings(it) },
                                         onPickCustomBackground = { uri -> viewModel.importCustomBackground(uri) },
                                         onResetCustomBackground = { viewModel.clearCustomBackground() },
+                                        onImportTexture = { slot, uri -> viewModel.importTexture(slot, uri) },
+                                        onClearTexture = { slot -> viewModel.clearTexture(slot) },
+                                        onImportFont = { slot, uri -> viewModel.importFont(slot, uri) },
+                                        onClearFont = { slot -> viewModel.clearFont(slot) },
+                                        onExportThemePackage = { onReady -> viewModel.exportThemePackage(onReady) },
+                                        onImportThemePackage = { uri -> viewModel.importThemePackage(uri) },
+                                        onRestoreFactoryDefaults = { viewModel.restoreFactoryUiDefaults() },
                                         onBack = { navController.popBackStack() }
                                     )
                                 }

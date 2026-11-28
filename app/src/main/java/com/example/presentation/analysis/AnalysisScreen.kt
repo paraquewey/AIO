@@ -65,6 +65,7 @@ import com.example.domain.models.PortScannerState
 import com.example.domain.models.SpeedSample
 import com.example.domain.models.SpeedTestState
 import com.example.domain.models.TunnelProfile
+import com.example.presentation.components.AioActionButton
 import com.example.presentation.components.GlassCard
 import com.example.ui.theme.LocalAioUiStyle
 import com.example.ui.theme.SpaceAmber
@@ -206,13 +207,11 @@ fun AnalysisScreen(
                 }
 
                 Spacer(Modifier.height(12.dp))
-                Button(
+                AioActionButton(
                     onClick = onRunSpeedTest,
                     enabled = !speedTestState.isRunning,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    ),
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("analysis_speed_button")
@@ -551,7 +550,7 @@ private fun AnalysisStatPill(
             Text(
                 text = value,
                 style = MaterialTheme.typography.titleSmall.copy(
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = uiStyle.terminalFontFamily,
                     fontWeight = FontWeight.Bold
                 ),
                 color = accent,

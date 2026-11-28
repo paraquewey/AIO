@@ -61,11 +61,14 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.domain.models.TunnelProfile
+import com.example.presentation.components.AioActionButton
 import com.example.presentation.components.GlassCard
 import com.example.presentation.components.ProtocolBadge
 import com.example.ui.theme.LocalAioUiStyle
 import com.example.ui.theme.SpaceAmber
 import com.example.ui.theme.SpaceCoral
+import com.example.ui.theme.TextureOverlayLayer
+import com.example.ui.theme.TextureSlot
 import kotlinx.coroutines.launch
 import java.nio.charset.StandardCharsets
 
@@ -163,12 +166,10 @@ fun ConfigsScreen(
                     text = "Gestor de perfiles",
                     style = MaterialTheme.typography.headlineMedium
                 )
-                Button(
+                AioActionButton(
                     onClick = onCreateNew,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    ),
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier.testTag("configs_create_button")
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -402,7 +403,17 @@ private fun ConfigItemCard(
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(1.dp, uiStyle.cardBorderColor)
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Box(modifier = Modifier.fillMaxWidth()) {
+            TextureOverlayLayer(
+                texturePath = uiStyle.cardTexturePath,
+                textureVersion = uiStyle.cardTextureVersion,
+                textureAlpha = uiStyle.cardTextureAlpha,
+                scaleMode = uiStyle.cardTextureMode,
+                maxDimensionPx = TextureSlot.CARD.maxDimensionPx,
+                isLightForeground = uiStyle.isLightForeground,
+                modifier = Modifier.matchParentSize()
+            )
+            Column(modifier = Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
@@ -465,6 +476,7 @@ private fun ConfigItemCard(
                         tint = SpaceCoral
                     )
                 }
+            }
             }
         }
     }

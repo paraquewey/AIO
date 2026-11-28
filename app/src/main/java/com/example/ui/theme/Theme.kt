@@ -9,31 +9,68 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.domain.models.FontColorMode
+import com.example.domain.models.TextureScaleMode
 
-private fun buildAdaptiveTypography(shadow: Shadow?): Typography {
-    if (shadow == null) return AioTypography
+private fun TextStyle.applyFontAndScale(
+    fontFamily: FontFamily,
+    scale: Float,
+    shadow: Shadow?
+): TextStyle {
+    val clampedScale = scale.coerceIn(0.80f, 1.35f)
+    val scaledSize: TextUnit = if (fontSize != TextUnit.Unspecified) {
+        (fontSize.value * clampedScale).sp
+    } else {
+        fontSize
+    }
+    val scaledLineHeight: TextUnit = if (lineHeight != TextUnit.Unspecified) {
+        (lineHeight.value * clampedScale).sp
+    } else {
+        lineHeight
+    }
+    return copy(
+        fontFamily = fontFamily,
+        fontSize = scaledSize,
+        lineHeight = scaledLineHeight,
+        shadow = shadow
+    )
+}
+
+private fun buildAdaptiveTypography(
+    shadow: Shadow?,
+    titleFontFamily: FontFamily,
+    titleFontScale: Float,
+    bodyFontFamily: FontFamily,
+    bodyFontScale: Float,
+    terminalFontFamily: FontFamily,
+    terminalFontScale: Float
+): Typography {
     return Typography(
-        displayLarge = AioTypography.displayLarge.copy(shadow = shadow),
-        displayMedium = AioTypography.displayMedium.copy(shadow = shadow),
-        displaySmall = AioTypography.displaySmall.copy(shadow = shadow),
-        headlineLarge = AioTypography.headlineLarge.copy(shadow = shadow),
-        headlineMedium = AioTypography.headlineMedium.copy(shadow = shadow),
-        headlineSmall = AioTypography.headlineSmall.copy(shadow = shadow),
-        titleLarge = AioTypography.titleLarge.copy(shadow = shadow),
-        titleMedium = AioTypography.titleMedium.copy(shadow = shadow),
-        titleSmall = AioTypography.titleSmall.copy(shadow = shadow),
-        bodyLarge = AioTypography.bodyLarge.copy(shadow = shadow),
-        bodyMedium = AioTypography.bodyMedium.copy(shadow = shadow),
-        bodySmall = AioTypography.bodySmall.copy(shadow = shadow),
-        labelLarge = AioTypography.labelLarge.copy(shadow = shadow),
-        labelMedium = AioTypography.labelMedium.copy(shadow = shadow),
-        labelSmall = AioTypography.labelSmall.copy(shadow = shadow)
+        displayLarge = AioTypography.displayLarge.applyFontAndScale(titleFontFamily, titleFontScale, shadow),
+        displayMedium = AioTypography.displayMedium.applyFontAndScale(titleFontFamily, titleFontScale, shadow),
+        displaySmall = AioTypography.displaySmall.applyFontAndScale(titleFontFamily, titleFontScale, shadow),
+        headlineLarge = AioTypography.headlineLarge.applyFontAndScale(titleFontFamily, titleFontScale, shadow),
+        headlineMedium = AioTypography.headlineMedium.applyFontAndScale(titleFontFamily, titleFontScale, shadow),
+        headlineSmall = AioTypography.headlineSmall.applyFontAndScale(titleFontFamily, titleFontScale, shadow),
+        titleLarge = AioTypography.titleLarge.applyFontAndScale(titleFontFamily, titleFontScale, shadow),
+        titleMedium = AioTypography.titleMedium.applyFontAndScale(titleFontFamily, titleFontScale, shadow),
+        titleSmall = AioTypography.titleSmall.applyFontAndScale(titleFontFamily, titleFontScale, shadow),
+        bodyLarge = AioTypography.bodyLarge.applyFontAndScale(bodyFontFamily, bodyFontScale, shadow),
+        bodyMedium = AioTypography.bodyMedium.applyFontAndScale(bodyFontFamily, bodyFontScale, shadow),
+        bodySmall = AioTypography.bodySmall.applyFontAndScale(bodyFontFamily, bodyFontScale, shadow),
+        labelLarge = AioTypography.labelLarge.applyFontAndScale(bodyFontFamily, bodyFontScale, shadow),
+        labelMedium = AioTypography.labelMedium.applyFontAndScale(terminalFontFamily, terminalFontScale, shadow),
+        labelSmall = AioTypography.labelSmall.applyFontAndScale(bodyFontFamily, bodyFontScale, shadow)
     )
 }
 
@@ -119,6 +156,29 @@ fun AioTunnelTheme(
     fontColorMode: FontColorMode = FontColorMode.ADAPTIVE,
     effectiveBackgroundLuminance: Float = if (useLightTheme) 0.92f else 0.04f,
     hasCustomBackground: Boolean = false,
+    cardTexturePath: String? = null,
+    cardTextureMode: TextureScaleMode = TextureScaleMode.CROP,
+    cardTextureAlpha: Float = 0.45f,
+    cardTextureVersion: Long = 0L,
+    heroButtonTexturePath: String? = null,
+    heroButtonTextureAlpha: Float = 0.65f,
+    heroButtonTextureVersion: Long = 0L,
+    actionButtonTexturePath: String? = null,
+    actionButtonTextureAlpha: Float = 0.55f,
+    actionButtonTextureVersion: Long = 0L,
+    navBarTexturePath: String? = null,
+    navBarTextureAlpha: Float = 0.60f,
+    navBarTextureVersion: Long = 0L,
+    titleFontPath: String? = null,
+    titleFontScale: Float = 1.0f,
+    titleFontVersion: Long = 0L,
+    bodyFontPath: String? = null,
+    bodyFontScale: Float = 1.0f,
+    bodyFontVersion: Long = 0L,
+    terminalFontPath: String? = null,
+    terminalFontScale: Float = 1.0f,
+    terminalFontVersion: Long = 0L,
+    onFontWarning: (String) -> Unit = {},
     content: @Composable () -> Unit
 ) {
     val isLightForeground = remember(fontColorMode, effectiveBackgroundLuminance) {
@@ -141,8 +201,48 @@ fun AioTunnelTheme(
         buildForegroundTextShadow(isLightForeground = isLightForeground, hasCustomBackground = hasCustomBackground)
     }
 
-    val typography = remember(textShadow) {
-        buildAdaptiveTypography(textShadow)
+    val titleFontResult = remember(titleFontPath, titleFontVersion) {
+        loadSafeFontFamily(titleFontPath)
+    }
+    val bodyFontResult = remember(bodyFontPath, bodyFontVersion) {
+        loadSafeFontFamily(bodyFontPath)
+    }
+    val terminalFontResult = remember(terminalFontPath, terminalFontVersion) {
+        loadSafeFontFamily(terminalFontPath)
+    }
+
+    LaunchedEffect(titleFontResult.errorMessage) {
+        titleFontResult.errorMessage?.let(onFontWarning)
+    }
+    LaunchedEffect(bodyFontResult.errorMessage) {
+        bodyFontResult.errorMessage?.let(onFontWarning)
+    }
+    LaunchedEffect(terminalFontResult.errorMessage) {
+        terminalFontResult.errorMessage?.let(onFontWarning)
+    }
+
+    val resolvedTitleFont = titleFontResult.fontFamily ?: SpaceGroteskFamily
+    val resolvedBodyFont = bodyFontResult.fontFamily ?: PlusJakartaFamily
+    val resolvedTerminalFont = terminalFontResult.fontFamily ?: JetBrainsMonoFamily
+
+    val typography = remember(
+        textShadow,
+        resolvedTitleFont,
+        titleFontScale,
+        resolvedBodyFont,
+        bodyFontScale,
+        resolvedTerminalFont,
+        terminalFontScale
+    ) {
+        buildAdaptiveTypography(
+            shadow = textShadow,
+            titleFontFamily = resolvedTitleFont,
+            titleFontScale = titleFontScale,
+            bodyFontFamily = resolvedBodyFont,
+            bodyFontScale = bodyFontScale,
+            terminalFontFamily = resolvedTerminalFont,
+            terminalFontScale = terminalFontScale
+        )
     }
 
     val uiStyle = remember(
@@ -150,7 +250,26 @@ fun AioTunnelTheme(
         hasCustomBackground,
         effectiveBackgroundLuminance,
         primaryAccent,
-        textShadow
+        textShadow,
+        cardTexturePath,
+        cardTextureMode,
+        cardTextureAlpha,
+        cardTextureVersion,
+        heroButtonTexturePath,
+        heroButtonTextureAlpha,
+        heroButtonTextureVersion,
+        actionButtonTexturePath,
+        actionButtonTextureAlpha,
+        actionButtonTextureVersion,
+        navBarTexturePath,
+        navBarTextureAlpha,
+        navBarTextureVersion,
+        resolvedTitleFont,
+        titleFontScale,
+        resolvedBodyFont,
+        bodyFontScale,
+        resolvedTerminalFont,
+        terminalFontScale
     ) {
         val cardBg = if (isLightForeground) {
             if (hasCustomBackground) Color(0xCC0D111E) else SpaceGlassSurface
@@ -181,7 +300,26 @@ fun AioTunnelTheme(
             cardElevatedColor = cardElevated,
             cardBorderColor = cardBorder,
             cardBorderSubtleColor = cardBorderSubtle,
-            textShadow = textShadow
+            textShadow = textShadow,
+            cardTexturePath = cardTexturePath,
+            cardTextureMode = cardTextureMode,
+            cardTextureAlpha = cardTextureAlpha.coerceIn(0f, 1f),
+            cardTextureVersion = cardTextureVersion,
+            heroButtonTexturePath = heroButtonTexturePath,
+            heroButtonTextureAlpha = heroButtonTextureAlpha.coerceIn(0f, 1f),
+            heroButtonTextureVersion = heroButtonTextureVersion,
+            actionButtonTexturePath = actionButtonTexturePath,
+            actionButtonTextureAlpha = actionButtonTextureAlpha.coerceIn(0f, 1f),
+            actionButtonTextureVersion = actionButtonTextureVersion,
+            navBarTexturePath = navBarTexturePath,
+            navBarTextureAlpha = navBarTextureAlpha.coerceIn(0f, 1f),
+            navBarTextureVersion = navBarTextureVersion,
+            titleFontFamily = resolvedTitleFont,
+            titleFontScale = titleFontScale.coerceIn(0.80f, 1.35f),
+            bodyFontFamily = resolvedBodyFont,
+            bodyFontScale = bodyFontScale.coerceIn(0.80f, 1.35f),
+            terminalFontFamily = resolvedTerminalFont,
+            terminalFontScale = terminalFontScale.coerceIn(0.80f, 1.35f)
         )
     }
 
@@ -197,4 +335,3 @@ fun AioTunnelTheme(
         )
     }
 }
-

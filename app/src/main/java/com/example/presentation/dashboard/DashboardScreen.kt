@@ -68,7 +68,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.domain.models.ConnectionState
+import com.example.domain.models.TextureScaleMode
 import com.example.domain.models.TunnelProfile
+import com.example.presentation.components.AioActionButton
 import com.example.presentation.components.GlassCard
 import com.example.presentation.components.ProtocolBadge
 import com.example.presentation.components.formatDuration
@@ -78,6 +80,8 @@ import com.example.ui.theme.SpaceAmber
 import com.example.ui.theme.SpaceCoral
 import com.example.ui.theme.SpaceEmerald
 import com.example.ui.theme.SpaceGlassHighlight
+import com.example.ui.theme.TextureOverlayLayer
+import com.example.ui.theme.TextureSlot
 import com.example.vpn.tun.DnsManager
 
 @Composable
@@ -253,7 +257,9 @@ fun DashboardScreen(
                 Text(
                     text = formatDuration(sessionDurationSeconds),
                     style = MaterialTheme.typography.displaySmall.copy(
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = uiStyle.titleFontFamily,
+                        fontSize = (32f * uiStyle.titleFontScale).sp,
+                        lineHeight = (38f * uiStyle.titleFontScale).sp,
                         fontWeight = FontWeight.SemiBold,
                         letterSpacing = 1.5.sp
                     ),
@@ -319,6 +325,7 @@ fun DashboardScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
+                            .clip(CircleShape)
                             .background(
                                 Brush.verticalGradient(
                                     listOf(SpaceGlassHighlight, Color.Transparent)
@@ -326,6 +333,15 @@ fun DashboardScreen(
                             ),
                         contentAlignment = Alignment.Center
                     ) {
+                        TextureOverlayLayer(
+                            texturePath = uiStyle.heroButtonTexturePath,
+                            textureVersion = uiStyle.heroButtonTextureVersion,
+                            textureAlpha = uiStyle.heroButtonTextureAlpha,
+                            scaleMode = TextureScaleMode.CROP,
+                            maxDimensionPx = TextureSlot.HERO_BUTTON.maxDimensionPx,
+                            isLightForeground = uiStyle.isLightForeground,
+                            modifier = Modifier.fillMaxSize()
+                        )
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center
@@ -497,12 +513,10 @@ fun DashboardScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(12.dp))
-                        Button(
+                        AioActionButton(
                             onClick = onOpenCreateConfig,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = primaryAccent,
-                                contentColor = MaterialTheme.colorScheme.onPrimary
-                            ),
+                            containerColor = primaryAccent,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
                             modifier = Modifier.testTag("dashboard_create_first_profile_button")
                         ) {
                             Text("Crear o importar perfil")
@@ -604,7 +618,7 @@ fun DashboardScreen(
                                 else -> "Tu IP aparecerá al conectar"
                             },
                             style = MaterialTheme.typography.titleMedium.copy(
-                                fontFamily = if (connected?.exitIp != null) FontFamily.Monospace else FontFamily.Default,
+                                fontFamily = if (connected?.exitIp != null) uiStyle.terminalFontFamily else uiStyle.bodyFontFamily,
                                 fontWeight = FontWeight.Bold
                             ),
                             color = MaterialTheme.colorScheme.onSurface,
@@ -621,7 +635,10 @@ fun DashboardScreen(
                         if (nodeLabel != null) {
                             Text(
                                 text = nodeLabel,
-                                style = MaterialTheme.typography.labelSmall,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = uiStyle.terminalFontFamily,
+                                    fontSize = (10f * uiStyle.terminalFontScale).coerceIn(8.5f, 14f).sp
+                                ),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }

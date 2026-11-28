@@ -5,11 +5,13 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.AioTunnelApplication
-import com.example.ui.theme.computeBitmapAverageLuminance
-import com.example.ui.theme.decodeSampledBackgroundBitmap
+import com.example.ui.theme.FontSlot
+import com.example.ui.theme.TextureSlot
+import com.example.ui.theme.ThemePackManager
 import com.example.core.logger.AppLogger
 import com.example.data.import_export.ConfigParserAndExporter
 import com.example.data.security.SshHostKeyStore
@@ -1068,46 +1070,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun importCustomBackground(uri: Uri) {
         viewModelScope.launch {
             val imported = withContext(Dispatchers.IO) {
-                runCatching {
-                    val destFile = File(app.filesDir, "custom_bg.jpg")
-                    val tempFile = File(app.filesDir, "custom_bg.tmp")
-                    app.contentResolver.openInputStream(uri)?.use { input ->
-                        FileOutputStream(tempFile).use { output ->
-                            input.copyTo(output)
-                        }
-                    } ?: error("No se pudo abrir la imagen seleccionada.")
-
-                    if (!tempFile.exists() || tempFile.length() <= 0L) {
-                        tempFile.delete()
-                        error("La imagen seleccionada está vacía.")
-                    }
-
-                    val bitmap = decodeSampledBackgroundBitmap(tempFile.absolutePath, maxDimensionPx = 1080)
-                    if (bitmap == null) {
-                        tempFile.delete()
-                        error("Formato de imagen no compatible.")
-                    }
-                    val avgLum = try {
-                        computeBitmapAverageLuminance(bitmap)
-                    } finally {
-                        if (!bitmap.isRecycled) bitmap.recycle()
-                    }
-                    if (destFile.exists()) destFile.delete()
-                    if (!tempFile.renameTo(destFile)) {
-                        tempFile.copyTo(destFile, overwrite = true)
-                        tempFile.delete()
-                    }
-                    destFile.absolutePath to avgLum
-                }
+                ThemePackManager.importThemeImage(app, uri, slotPrefix = "bg", maxDimensionPx = 1440)
             }
-
-            imported.onSuccess { (path, luminance) ->
-                val version = System.currentTimeMillis()
+            imported.onSuccess { res ->
                 settingsRepo.update {
                     it.copy(
-                        customBackgroundPath = path,
-                        customBackgroundLuminance = luminance,
-                        customBackgroundVersion = version
+                        customBackgroundPath = res.filePath,
+                        customBackgroundLuminance = res.luminance,
+                        customBackgroundVersion = res.version
                     )
                 }
                 _userMessage.value = "Fondo personalizado aplicado correctamente."
@@ -1119,8 +1089,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearCustomBackground() {
         viewModelScope.launch {
+            val currentPath = settings.value.customBackgroundPath
             withContext(Dispatchers.IO) {
-                runCatching { File(app.filesDir, "custom_bg.jpg").delete() }
+                ThemePackManager.clearThemeImage(app, slotPrefix = "bg", currentPath = currentPath)
             }
             settingsRepo.update {
                 it.copy(
@@ -1130,6 +1101,165 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             _userMessage.value = "Fondo espacial restaurado."
+        }
+    }
+
+    fun importTexture(slot: TextureSlot, uri: Uri) {
+        viewModelScope.launch {
+            val imported = withContext(Dispatchers.IO) {
+                ThemePackManager.importThemeImage(
+                    context = app,
+                    uri = uri,
+                    slotPrefix = slot.id,
+                    maxDimensionPx = slot.maxDimensionPx
+                )
+            }
+            imported.onSuccess { res ->
+                settingsRepo.update { current ->
+                    when (slot) {
+                        TextureSlot.CARD -> current.copy(
+                            cardTexturePath = res.filePath,
+                            cardTextureVersion = res.version
+                        )
+                        TextureSlot.HERO_BUTTON -> current.copy(
+                            heroButtonTexturePath = res.filePath,
+                            heroButtonTextureVersion = res.version
+                        )
+                        TextureSlot.ACTION_BUTTON -> current.copy(
+                            actionButtonTexturePath = res.filePath,
+                            actionButtonTextureVersion = res.version
+                        )
+                        TextureSlot.NAV_BAR -> current.copy(
+                            navBarTexturePath = res.filePath,
+                            navBarTextureVersion = res.version
+                        )
+                    }
+                }
+                _userMessage.value = "Textura aplicada en ${slot.label}."
+            }.onFailure { err ->
+                _userMessage.value = err.message ?: "No se pudo aplicar la textura seleccionada."
+            }
+        }
+    }
+
+    fun clearTexture(slot: TextureSlot) {
+        viewModelScope.launch {
+            val currentSettings = settings.value
+            val currentPath = when (slot) {
+                TextureSlot.CARD -> currentSettings.cardTexturePath
+                TextureSlot.HERO_BUTTON -> currentSettings.heroButtonTexturePath
+                TextureSlot.ACTION_BUTTON -> currentSettings.actionButtonTexturePath
+                TextureSlot.NAV_BAR -> currentSettings.navBarTexturePath
+            }
+            withContext(Dispatchers.IO) {
+                ThemePackManager.clearThemeImage(app, slotPrefix = slot.id, currentPath = currentPath)
+            }
+            settingsRepo.update { current ->
+                when (slot) {
+                    TextureSlot.CARD -> current.copy(cardTexturePath = null, cardTextureVersion = 0L)
+                    TextureSlot.HERO_BUTTON -> current.copy(heroButtonTexturePath = null, heroButtonTextureVersion = 0L)
+                    TextureSlot.ACTION_BUTTON -> current.copy(actionButtonTexturePath = null, actionButtonTextureVersion = 0L)
+                    TextureSlot.NAV_BAR -> current.copy(navBarTexturePath = null, navBarTextureVersion = 0L)
+                }
+            }
+            _userMessage.value = "Textura restaurada en ${slot.label}."
+        }
+    }
+
+    fun importFont(slot: FontSlot, uri: Uri) {
+        viewModelScope.launch {
+            val imported = withContext(Dispatchers.IO) {
+                ThemePackManager.importThemeFont(app, uri, slot)
+            }
+            imported.onSuccess { res ->
+                settingsRepo.update { current ->
+                    when (slot) {
+                        FontSlot.TITLE -> current.copy(
+                            titleFontPath = res.filePath,
+                            titleFontVersion = res.version
+                        )
+                        FontSlot.BODY -> current.copy(
+                            bodyFontPath = res.filePath,
+                            bodyFontVersion = res.version
+                        )
+                        FontSlot.TERMINAL -> current.copy(
+                            terminalFontPath = res.filePath,
+                            terminalFontVersion = res.version
+                        )
+                    }
+                }
+                _userMessage.value = "Fuente aplicada en ${slot.label}: ${res.displayName}"
+            }.onFailure { err ->
+                _userMessage.value = err.message ?: "No se pudo validar o cargar la fuente."
+            }
+        }
+    }
+
+    fun clearFont(slot: FontSlot) {
+        viewModelScope.launch {
+            val currentSettings = settings.value
+            val currentPath = when (slot) {
+                FontSlot.TITLE -> currentSettings.titleFontPath
+                FontSlot.BODY -> currentSettings.bodyFontPath
+                FontSlot.TERMINAL -> currentSettings.terminalFontPath
+            }
+            withContext(Dispatchers.IO) {
+                ThemePackManager.clearThemeFont(app, slot, currentPath)
+            }
+            settingsRepo.update { current ->
+                when (slot) {
+                    FontSlot.TITLE -> current.copy(titleFontPath = null, titleFontVersion = 0L)
+                    FontSlot.BODY -> current.copy(bodyFontPath = null, bodyFontVersion = 0L)
+                    FontSlot.TERMINAL -> current.copy(terminalFontPath = null, terminalFontVersion = 0L)
+                }
+            }
+            _userMessage.value = "Fuente predeterminada restaurada en ${slot.label}."
+        }
+    }
+
+    fun exportThemePackage(onReadyToShare: (Uri) -> Unit) {
+        viewModelScope.launch {
+            val snapshot = settings.value
+            val result = withContext(Dispatchers.IO) {
+                ThemePackManager.exportThemePackage(app, snapshot)
+            }
+            result.onSuccess { file ->
+                val contentUri = runCatching {
+                    FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", file)
+                }.getOrNull()
+                if (contentUri != null) {
+                    onReadyToShare(contentUri)
+                } else {
+                    _userMessage.value = "No se pudo generar el enlace seguro del tema."
+                }
+            }.onFailure { err ->
+                _userMessage.value = err.message ?: "Error al exportar el tema (.aiotheme)."
+            }
+        }
+    }
+
+    fun importThemePackage(uri: Uri) {
+        viewModelScope.launch {
+            val current = settings.value
+            val result = withContext(Dispatchers.IO) {
+                ThemePackManager.importThemePackage(app, uri, current)
+            }
+            result.onSuccess { updated ->
+                settingsRepo.update { updated }
+                _userMessage.value = "Paquete de tema (.aiotheme) importado y aplicado."
+            }.onFailure { err ->
+                _userMessage.value = err.message ?: "El archivo .aiotheme no es válido."
+            }
+        }
+    }
+
+    fun restoreFactoryUiDefaults() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                ThemePackManager.clearAllThemeAssets(app)
+            }
+            settingsRepo.update { it.restoreFactoryUiDefaults() }
+            _userMessage.value = "Aspecto visual de fábrica restaurado."
         }
     }
 

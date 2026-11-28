@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <cache-path
+        name="theme_exports"
+        path="themes_export/" />
+    <files-path
+        name="themes_files"
+        path="themes/" />
+</paths>

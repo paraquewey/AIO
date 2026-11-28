@@ -16,20 +16,36 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
+import android.graphics.Bitmap
+import android.net.Uri
 import com.example.data.database.AioDatabase
 import com.example.data.database.toDomain
 import com.example.data.database.toEntity
+import com.example.domain.models.AppSettings
+import com.example.domain.models.FontColorMode
 import com.example.domain.models.ServerMessageMode
+import com.example.domain.models.TextureScaleMode
 import com.example.domain.models.TunnelProfile
 import com.example.domain.models.TunnelProtocol
+import com.example.ui.theme.FontSlot
+import com.example.ui.theme.ThemePackManager
+import com.example.ui.theme.loadSafeFontFamily
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.File
+import java.io.FileOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -181,6 +197,126 @@ class AioRobolectricUiTest {
         composeRule.onNodeWithTag("ui_custom_back_button").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("settings_ui_customization_card").assertIsDisplayed()
+    }
+
+    @Test
+    fun `ui customization phase 2 displays live preview, texture modes, font controls and theme pack actions`() {
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("nav_settings").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("settings_ui_customization_card").performScrollTo().performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("ui_custom_preview_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("preview_action_button").assertIsDisplayed()
+
+        // Expand Textures section and toggle TILE mode
+        composeRule.onNodeWithTag("section_textures").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tex_card_pick_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("tex_card_mode_tile").performScrollTo().performClick()
+        composeRule.onNodeWithTag("tex_hero_pick_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("tex_action_pick_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("tex_navbar_pick_button").performScrollTo().assertIsDisplayed()
+
+        // Expand Typography section
+        composeRule.onNodeWithTag("section_typography").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("font_title_pick_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("font_body_pick_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("font_terminal_pick_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("font_terminal_scale_slider").performScrollTo().assertIsDisplayed()
+
+        // Expand Export/Import Theme section and trigger Factory Reset
+        composeRule.onNodeWithTag("section_theme_pack").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("theme_export_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("theme_import_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("ui_factory_reset_button").performScrollTo().performClick()
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun `theme pack manager exports and imports aiotheme zip and safely rejects corrupt fonts and zip slip`() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+
+        // 1. Corrupt font fallback check (never throws, returns friendly error)
+        val corruptFont = File(context.cacheDir, "corrupt_test.ttf").apply {
+            writeBytes("NOT_A_VALID_TTF_FILE".toByteArray())
+        }
+        val fontLoad = loadSafeFontFamily(corruptFont.absolutePath)
+        assertNull(fontLoad.fontFamily)
+        assertNotNull(fontLoad.errorMessage)
+
+        val fontImportRes = ThemePackManager.importThemeFont(context, Uri.fromFile(corruptFont), FontSlot.TERMINAL)
+        assertTrue(fontImportRes.isFailure)
+
+        // 2. Create real PNG texture asset & test .aiotheme export + import round-trip
+        val imgFile = File(context.cacheDir, "sample_tex.png")
+        val bmp = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        bmp.eraseColor(android.graphics.Color.CYAN)
+        FileOutputStream(imgFile).use { fos ->
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, fos)
+        }
+        bmp.recycle()
+
+        val sourceSettings = AppSettings(
+            fontColorMode = FontColorMode.FORCED_WHITE,
+            primaryAccentArgb = 0xFF00E5A8L,
+            backgroundDimmerAlpha = 0.50f,
+            customBackgroundPath = imgFile.absolutePath,
+            customBackgroundLuminance = 0.72f,
+            cardTexturePath = imgFile.absolutePath,
+            cardTextureMode = TextureScaleMode.TILE,
+            cardTextureAlpha = 0.62f,
+            heroButtonTexturePath = imgFile.absolutePath,
+            heroButtonTextureAlpha = 0.80f,
+            titleFontScale = 1.15f,
+            bodyFontScale = 0.95f,
+            terminalFontScale = 1.25f
+        )
+
+        val exportRes = ThemePackManager.exportThemePackage(context, sourceSettings)
+        assertTrue(exportRes.isSuccess)
+        val exportedZip = exportRes.getOrThrow()
+        assertTrue(exportedZip.exists() && exportedZip.length() > 0L)
+
+        ZipFile(exportedZip).use { zf ->
+            assertNotNull(zf.getEntry("theme.json"))
+        }
+
+        val importRes = ThemePackManager.importThemePackage(
+            context = context,
+            uri = Uri.fromFile(exportedZip),
+            currentSettings = AppSettings()
+        )
+        assertTrue(importRes.isSuccess)
+        val restored = importRes.getOrThrow()
+        assertEquals(FontColorMode.FORCED_WHITE, restored.fontColorMode)
+        assertEquals(0xFF00E5A8L, restored.primaryAccentArgb)
+        assertEquals(TextureScaleMode.TILE, restored.cardTextureMode)
+        assertEquals(0.62f, restored.cardTextureAlpha, 0.01f)
+        assertEquals(1.15f, restored.titleFontScale, 0.01f)
+        assertEquals(0.95f, restored.bodyFontScale, 0.01f)
+        assertEquals(1.25f, restored.terminalFontScale, 0.01f)
+        assertNotNull(restored.cardTexturePath)
+        assertTrue(File(restored.cardTexturePath!!).exists())
+
+        // 3. Zip Slip security check
+        val maliciousZip = File(context.cacheDir, "evil_slip.aiotheme")
+        ZipOutputStream(FileOutputStream(maliciousZip)).use { zos ->
+            zos.putNextEntry(ZipEntry("../../outside_escape.txt"))
+            zos.write("pwn".toByteArray())
+            zos.closeEntry()
+        }
+        val evilImport = ThemePackManager.importThemePackage(context, Uri.fromFile(maliciousZip), AppSettings())
+        assertTrue(evilImport.isFailure)
+        assertFalse(File(context.cacheDir.parentFile, "outside_escape.txt").exists())
+
+        corruptFont.delete()
+        imgFile.delete()
+        maliciousZip.delete()
     }
 
     @Test

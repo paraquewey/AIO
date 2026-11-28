@@ -51,13 +51,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.domain.models.TextureScaleMode
 import com.example.domain.models.TunnelProfile
+import com.example.presentation.components.AioActionButton
 import com.example.presentation.components.GlassCard
 import com.example.presentation.components.LatencyPill
 import com.example.presentation.components.ProtocolBadge
 import com.example.ui.theme.LocalAioUiStyle
 import com.example.ui.theme.SpaceAmber
 import com.example.ui.theme.SpaceEmerald
+import com.example.ui.theme.TextureOverlayLayer
+import com.example.ui.theme.TextureSlot
 
 private enum class ServerFilter(val label: String) {
     ALL("Todos"),
@@ -160,13 +164,11 @@ fun ServersScreen(
                     Spacer(Modifier.width(6.dp))
                     Text("Medir latencia")
                 }
-                Button(
+                AioActionButton(
                     onClick = onAutoSelectFastest,
                     enabled = !isMeasuringLatency && profiles.isNotEmpty(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    ),
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier
                         .weight(1f)
                         .testTag("servers_auto_select_button")
@@ -201,12 +203,10 @@ fun ServersScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(12.dp))
-                        Button(
+                        AioActionButton(
                             onClick = onAddProfile,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary
-                            )
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
                         ) {
                             Icon(Icons.Default.Add, contentDescription = null)
                             Spacer(Modifier.width(6.dp))
@@ -257,10 +257,20 @@ private fun ServerItemCard(
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(if (isSelected) 1.5.dp else 1.dp, borderColor)
     ) {
-        Row(
-            modifier = Modifier.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Box(modifier = Modifier.fillMaxWidth()) {
+            TextureOverlayLayer(
+                texturePath = uiStyle.cardTexturePath,
+                textureVersion = uiStyle.cardTextureVersion,
+                textureAlpha = uiStyle.cardTextureAlpha,
+                scaleMode = uiStyle.cardTextureMode,
+                maxDimensionPx = TextureSlot.CARD.maxDimensionPx,
+                isLightForeground = uiStyle.isLightForeground,
+                modifier = Modifier.matchParentSize()
+            )
+            Row(
+                modifier = Modifier.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
             Box(
                 modifier = Modifier
                     .size(10.dp)
@@ -315,6 +325,7 @@ private fun ServerItemCard(
                     contentDescription = if (profile.isFavorite) "Quitar de favoritos" else "Marcar como favorito",
                     tint = if (profile.isFavorite) SpaceAmber else MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
             }
         }
     }

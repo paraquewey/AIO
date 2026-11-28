@@ -18,14 +18,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -36,10 +33,10 @@ import com.example.ui.theme.SpaceBgNavy
 import com.example.ui.theme.SpaceEmerald
 import com.example.ui.theme.SpaceGlassHighlight
 import com.example.ui.theme.SpaceViolet
-import com.example.ui.theme.decodeSampledBackgroundBitmap
+import com.example.ui.theme.TextureOverlayLayer
+import com.example.ui.theme.TextureSlot
+import com.example.ui.theme.rememberDecodedTextureBitmap
 import com.example.vpn.tun.DnsManager
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 @Composable
 fun SpaceGlassBackground(
@@ -52,19 +49,11 @@ fun SpaceGlassBackground(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit
 ) {
-    val customBitmap by produceState<ImageBitmap?>(
-        initialValue = null,
-        key1 = customBackgroundPath,
-        key2 = customBackgroundVersion
-    ) {
-        value = if (!customBackgroundPath.isNullOrBlank()) {
-            withContext(Dispatchers.IO) {
-                decodeSampledBackgroundBitmap(customBackgroundPath)?.asImageBitmap()
-            }
-        } else {
-            null
-        }
-    }
+    val customBitmap = rememberDecodedTextureBitmap(
+        path = customBackgroundPath,
+        version = customBackgroundVersion,
+        maxDimensionPx = 1440
+    )
 
     val topGlowColor by animateColorAsState(
         targetValue = if (isConnected) {
@@ -98,7 +87,7 @@ fun SpaceGlassBackground(
     ) {
         if (customBitmap != null) {
             Image(
-                bitmap = customBitmap!!,
+                bitmap = customBitmap,
                 contentDescription = "Fondo de pantalla personalizado",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -204,19 +193,31 @@ fun GlassCard(
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp
     ) {
-        Column(
-            modifier = Modifier
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            if (uiStyle.isLightForeground) SpaceGlassHighlight else Color.White.copy(alpha = 0.35f),
-                            Color.Transparent
+        Box(modifier = Modifier.fillMaxWidth()) {
+            TextureOverlayLayer(
+                texturePath = uiStyle.cardTexturePath,
+                textureVersion = uiStyle.cardTextureVersion,
+                textureAlpha = uiStyle.cardTextureAlpha,
+                scaleMode = uiStyle.cardTextureMode,
+                maxDimensionPx = TextureSlot.CARD.maxDimensionPx,
+                isLightForeground = uiStyle.isLightForeground,
+                modifier = Modifier.matchParentSize()
+            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                if (uiStyle.isLightForeground) SpaceGlassHighlight else Color.White.copy(alpha = 0.35f),
+                                Color.Transparent
+                            )
                         )
                     )
-                )
-                .padding(contentPadding),
-            content = content
-        )
+                    .padding(contentPadding),
+                content = content
+            )
+        }
     }
 }
 
@@ -240,7 +241,6 @@ private val COUNTRY_CUE_MAP = listOf(
 )
 
 fun inferCountryFlagForProfile(profile: TunnelProfile): String? {
-    // 1. If profile name already contains a regional indicator flag emoji, return it directly
     val name = profile.name
     val cps = name.codePoints().toArray()
     for (i in 0 until cps.size - 1) {

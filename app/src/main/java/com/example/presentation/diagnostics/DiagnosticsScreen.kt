@@ -83,8 +83,11 @@ import com.example.domain.models.DiagnosticStatus
 import com.example.domain.models.LogEntry
 import com.example.domain.models.LogLevel
 import com.example.domain.models.ServerMessageMode
+import com.example.presentation.components.AioActionButton
 import com.example.presentation.components.ServerMessageWebView
+import com.example.presentation.components.TexturedNavContainer
 import com.example.presentation.components.formatServerBannerAsHtml
+import com.example.ui.theme.LocalAioUiStyle
 import com.example.ui.theme.SpaceAmber
 import com.example.ui.theme.SpaceCyan
 import com.example.ui.theme.TerminalBg
@@ -190,17 +193,23 @@ fun DiagnosticsScreen(
         ConnectionState.Disconnected -> "Inactivo" to TerminalTimestamp
     }
 
+    val uiStyle = LocalAioUiStyle.current
+
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(TerminalBg)
     ) {
         // Minimalist TopBar (Title + subtle status/line badge on left; Copy + Clear + Sandwich Menu on right)
-        Surface(
-            color = TerminalTopBarBg,
+        TexturedNavContainer(
+            backgroundColor = TerminalTopBarBg,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Column {
+            Surface(
+                color = Color.Transparent,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -250,8 +259,8 @@ fun DiagnosticsScreen(
                                 Text(
                                     text = "$statusLabel · ${logs.size}",
                                     style = MaterialTheme.typography.labelSmall.copy(
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 10.5.sp,
+                                        fontFamily = uiStyle.terminalFontFamily,
+                                        fontSize = (10.5f * uiStyle.terminalFontScale).coerceIn(9f, 15f).sp,
                                         color = TerminalTextInfo
                                     ),
                                     modifier = Modifier.testTag("console_status_badge")
@@ -304,6 +313,7 @@ fun DiagnosticsScreen(
                     }
                 }
                 HorizontalDivider(thickness = 0.5.dp, color = TerminalDivider)
+                }
             }
         }
 
@@ -331,7 +341,9 @@ fun DiagnosticsScreen(
                     Text(
                         text = "Sin eventos registrados.\nConecta un perfil o ejecuta pruebas desde el menú ☰.",
                         style = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = uiStyle.terminalFontFamily,
+                            fontSize = (12f * uiStyle.terminalFontScale).coerceIn(9.5f, 16.5f).sp,
+                            lineHeight = (17f * uiStyle.terminalFontScale).coerceIn(13f, 23f).sp,
                             color = TerminalTimestamp
                         ),
                         modifier = Modifier.testTag("console_empty_state")
@@ -439,6 +451,7 @@ private fun TerminalLogRow(
     entry: LogEntry,
     formattedTime: String
 ) {
+    val uiStyle = LocalAioUiStyle.current
     val msgColor = remember(entry.level, entry.message) {
         classifyTerminalLogColor(entry)
     }
@@ -454,11 +467,14 @@ private fun TerminalLogRow(
         }
     }
 
+    val scaledSize = (11.5f * uiStyle.terminalFontScale.coerceIn(0.80f, 1.35f)).coerceIn(9f, 16f)
+    val scaledLineHeight = (scaledSize * 1.40f)
+
     Text(
         text = lineText,
-        fontFamily = FontFamily.Monospace,
-        fontSize = 11.5.sp,
-        lineHeight = 16.sp,
+        fontFamily = uiStyle.terminalFontFamily,
+        fontSize = scaledSize.sp,
+        lineHeight = scaledLineHeight.sp,
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 10.dp, vertical = 5.dp)
@@ -592,12 +608,10 @@ private fun ConsoleToolsBottomSheetContent(
                             color = SpaceAmber
                         )
                     }
-                    Button(
+                    AioActionButton(
                         onClick = onRunDiagnostics,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        ),
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                         modifier = Modifier.testTag("diagnostics_run_button")
                     ) {
@@ -668,10 +682,11 @@ private fun ConsoleToolsBottomSheetContent(
                             )
                         }
                         if (check.latencyMs != null) {
+                            val uiStyle = LocalAioUiStyle.current
                             Text(
                                 text = "${check.latencyMs} ms",
                                 style = MaterialTheme.typography.labelMedium.copy(
-                                    fontFamily = FontFamily.Monospace,
+                                    fontFamily = uiStyle.terminalFontFamily,
                                     fontWeight = FontWeight.SemiBold
                                 ),
                                 color = SpaceCyan
@@ -734,10 +749,12 @@ private fun ConsoleToolsBottomSheetContent(
                                     style = MaterialTheme.typography.labelMedium,
                                     color = TerminalTextInfo
                                 )
+                                val uiStyle = LocalAioUiStyle.current
                                 Text(
                                     text = rec.sha256Fingerprint,
                                     style = MaterialTheme.typography.labelSmall.copy(
-                                        fontFamily = FontFamily.Monospace
+                                        fontFamily = uiStyle.terminalFontFamily,
+                                        fontSize = (10f * uiStyle.terminalFontScale).coerceIn(8.5f, 14f).sp
                                     ),
                                     color = TerminalTimestamp
                                 )

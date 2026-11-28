@@ -1,5 +1,6 @@
 package com.example.presentation.settings
 
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -32,12 +33,16 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Contrast
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FontDownload
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Wallpaper
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,23 +57,34 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.domain.models.AppSettings
 import com.example.domain.models.FontColorMode
-import com.example.presentation.components.GlassCard
+import com.example.presentation.components.AioActionButton
+import com.example.presentation.components.TexturedNavContainer
 import com.example.ui.theme.ACCENT_PRESET_COLORS
+import com.example.ui.theme.FontSlot
 import com.example.ui.theme.LocalAioUiStyle
+import com.example.ui.theme.SpaceAmber
+import com.example.ui.theme.SpaceCoral
+import com.example.ui.theme.SpaceCyan
 import com.example.ui.theme.SpaceEmerald
-import com.example.ui.theme.computeContrastingOnAccent
+import com.example.ui.theme.TextureSlot
 import com.example.ui.theme.computeEffectiveBackgroundLuminance
+import com.example.ui.theme.computeContrastingOnAccent
 import kotlin.math.roundToInt
 import android.graphics.Color as AndroidColor
 
@@ -79,11 +95,19 @@ fun UiCustomizationScreen(
     onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit,
     onPickCustomBackground: (Uri) -> Unit,
     onResetCustomBackground: () -> Unit,
+    onImportTexture: (TextureSlot, Uri) -> Unit = { _, _ -> },
+    onClearTexture: (TextureSlot) -> Unit = {},
+    onImportFont: (FontSlot, Uri) -> Unit = { _, _ -> },
+    onClearFont: (FontSlot) -> Unit = {},
+    onExportThemePackage: ((Uri) -> Unit) -> Unit = {},
+    onImportThemePackage: (Uri) -> Unit = {},
+    onRestoreFactoryDefaults: () -> Unit = {},
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     BackHandler(onBack = onBack)
 
+    val context = LocalContext.current
     val uiStyle = LocalAioUiStyle.current
     val primaryAccent = MaterialTheme.colorScheme.primary
     val hasCustomBg = !settings.customBackgroundPath.isNullOrBlank()
@@ -94,11 +118,43 @@ fun UiCustomizationScreen(
         useLightTheme = settings.useLightTheme
     )
 
-    val galleryLauncher = rememberLauncherForActivityResult(
+    var colorsExpanded by rememberSaveable { mutableStateOf(true) }
+    var texturesExpanded by rememberSaveable { mutableStateOf(false) }
+    var typographyExpanded by rememberSaveable { mutableStateOf(false) }
+    var themePackExpanded by rememberSaveable { mutableStateOf(false) }
+
+    var pendingTextureSlot by remember { mutableStateOf<TextureSlot?>(null) }
+    var pendingFontSlot by remember { mutableStateOf<FontSlot?>(null) }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
+        val slot = pendingTextureSlot
+        pendingTextureSlot = null
         if (uri != null) {
-            onPickCustomBackground(uri)
+            if (slot == null) {
+                onPickCustomBackground(uri)
+            } else {
+                onImportTexture(slot, uri)
+            }
+        }
+    }
+
+    val fontPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val slot = pendingFontSlot
+        pendingFontSlot = null
+        if (uri != null && slot != null) {
+            onImportFont(slot, uri)
+        }
+    }
+
+    val themeImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            onImportThemePackage(uri)
         }
     }
 
@@ -112,34 +168,39 @@ fun UiCustomizationScreen(
     val currentVal = currentHsv[2].coerceIn(0.65f, 1f)
 
     Column(modifier = modifier.fillMaxSize()) {
-        TopAppBar(
-            title = {
-                Text(
-                    text = "Personalización de Interfaz",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-            },
-            navigationIcon = {
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier
-                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                        .testTag("ui_custom_back_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Volver a Ajustes",
-                        tint = MaterialTheme.colorScheme.onBackground
+        TexturedNavContainer(
+            backgroundColor = uiStyle.cardBackgroundColor.copy(alpha = 0.85f),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            TopAppBar(
+                title = {
+                    Text(
+                        text = "Personalización de Interfaz",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onBackground
                     )
-                }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = uiStyle.cardBackgroundColor.copy(alpha = 0.72f),
-                titleContentColor = MaterialTheme.colorScheme.onBackground,
-                navigationIconContentColor = MaterialTheme.colorScheme.onBackground
+                },
+                navigationIcon = {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier
+                            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                            .testTag("ui_custom_back_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Volver a Ajustes",
+                            tint = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent,
+                    titleContentColor = MaterialTheme.colorScheme.onBackground,
+                    navigationIconContentColor = MaterialTheme.colorScheme.onBackground
+                )
             )
-        )
+        }
 
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -153,28 +214,33 @@ fun UiCustomizationScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // 1. Font Color / Contrast Mode
-                GlassCard {
+                // Top Live Theme Preview
+                LiveThemePreviewCard()
+
+                // Section 1: Colors & Background
+                AccordionCustomizationSection(
+                    title = "Colores y Fondo",
+                    subtitle = "Contraste adaptable, fondo de galería y color de acento",
+                    icon = Icons.Default.ColorLens,
+                    iconTint = primaryAccent,
+                    expanded = colorsExpanded,
+                    onToggle = { colorsExpanded = !colorsExpanded },
+                    headerTag = "section_colors_bg"
+                ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Contrast,
-                            contentDescription = null,
-                            tint = primaryAccent
-                        )
-                        Spacer(Modifier.width(8.dp))
+                        Icon(Icons.Default.Contrast, contentDescription = null, tint = primaryAccent, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
                         Text(
                             text = "Color de fuente (Contraste)",
-                            style = MaterialTheme.typography.titleMedium,
+                            style = MaterialTheme.typography.titleSmall,
                             color = primaryAccent
                         )
                     }
-                    Spacer(Modifier.height(6.dp))
                     Text(
                         text = "En modo Adaptable, el texto cambia automáticamente a blanco (#F8FAFC) o negro (#0F172A) según la luminancia real del fondo.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(Modifier.height(12.dp))
 
                     val modeItems = listOf(
                         FontColorMode.ADAPTIVE to "font_mode_adaptive",
@@ -201,7 +267,6 @@ fun UiCustomizationScreen(
                         }
                     }
 
-                    Spacer(Modifier.height(10.dp))
                     val lumPct = (effectiveLum * 100f).roundToInt()
                     Text(
                         text = "Luminancia efectiva del fondo: $lumPct% · Texto activo: ${
@@ -211,57 +276,33 @@ fun UiCustomizationScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.testTag("ui_custom_luminance_label")
                     )
-                }
 
-                // 2. Custom Wallpaper & Dimmer
-                GlassCard {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Wallpaper,
-                            contentDescription = null,
-                            tint = SpaceEmerald
-                        )
-                        Spacer(Modifier.width(8.dp))
+                        Icon(Icons.Default.Wallpaper, contentDescription = null, tint = SpaceEmerald, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
                         Text(
                             text = "Fondo de pantalla personalizado",
-                            style = MaterialTheme.typography.titleMedium,
+                            style = MaterialTheme.typography.titleSmall,
                             color = SpaceEmerald
                         )
                     }
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = if (hasCustomBg) {
-                            "Imagen de galería activa detrás de las tarjetas Space Glass."
-                        } else {
-                            "Usando el fondo espacial Space Glass predeterminado."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(12.dp))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    AioActionButton(
+                        onClick = {
+                            pendingTextureSlot = null
+                            imagePickerLauncher.launch("image/*")
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("ui_custom_pick_bg_button")
                     ) {
-                        Button(
-                            onClick = { galleryLauncher.launch("image/*") },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = primaryAccent,
-                                contentColor = MaterialTheme.colorScheme.onPrimary
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .sizeIn(minHeight = 48.dp)
-                                .testTag("ui_custom_pick_bg_button")
-                        ) {
-                            Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Seleccionar imagen de galería")
-                        }
+                        Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Seleccionar imagen de galería")
                     }
 
-                    Spacer(Modifier.height(8.dp))
                     OutlinedButton(
                         onClick = onResetCustomBackground,
                         enabled = hasCustomBg,
@@ -275,22 +316,14 @@ fun UiCustomizationScreen(
                         Text("Restaurar fondo espacial")
                     }
 
-                    Spacer(Modifier.height(12.dp))
                     val dimmerPct = (settings.backgroundDimmerAlpha * 100f).roundToInt()
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "Opacidad del atenuador (Dimmer)",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                        Text(
-                            text = "$dimmerPct%",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = primaryAccent
-                        )
+                        Text("Opacidad del atenuador (Dimmer)", style = MaterialTheme.typography.bodyMedium)
+                        Text("$dimmerPct%", style = MaterialTheme.typography.labelLarge, color = primaryAccent)
                     }
                     Slider(
                         value = settings.backgroundDimmerAlpha.coerceIn(0f, 0.85f),
@@ -302,31 +335,14 @@ fun UiCustomizationScreen(
                         valueRange = 0f..0.85f,
                         modifier = Modifier.testTag("ui_custom_dimmer_slider")
                     )
-                }
 
-                // 3. Primary Accent Color Picker (Swatches + Hue/Saturation Sliders)
-                GlassCard {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.ColorLens,
-                            contentDescription = null,
-                            tint = primaryAccent
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = "Color principal (Acento de la UI)",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = primaryAccent
-                        )
-                    }
-                    Spacer(Modifier.height(6.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
                     Text(
-                        text = "Personaliza el tono de botones, bordes luminosos, interruptores activos e iconos seleccionados.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = "Color principal (Acento de la UI)",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = primaryAccent
                     )
-                    Spacer(Modifier.height(12.dp))
-
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -363,7 +379,6 @@ fun UiCustomizationScreen(
                         }
                     }
 
-                    Spacer(Modifier.height(14.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
@@ -402,8 +417,6 @@ fun UiCustomizationScreen(
                         modifier = Modifier.testTag("accent_sat_slider")
                     )
 
-                    Spacer(Modifier.height(8.dp))
-                    // Live accent preview strip
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = primaryAccent.copy(alpha = 0.14f),
@@ -434,7 +447,6 @@ fun UiCustomizationScreen(
                         }
                     }
 
-                    Spacer(Modifier.height(10.dp))
                     OutlinedButton(
                         onClick = {
                             onUpdateSettings { it.copy(primaryAccentArgb = 0xFF7B61FFL) }
@@ -447,6 +459,222 @@ fun UiCustomizationScreen(
                         Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("Restaurar acento Space (#7B61FF)")
+                    }
+                }
+
+                // Section 2: Component Textures
+                val activeTextureCount = listOfNotNull(
+                    settings.cardTexturePath?.takeIf { it.isNotBlank() },
+                    settings.heroButtonTexturePath?.takeIf { it.isNotBlank() },
+                    settings.actionButtonTexturePath?.takeIf { it.isNotBlank() },
+                    settings.navBarTexturePath?.takeIf { it.isNotBlank() }
+                ).size
+                AccordionCustomizationSection(
+                    title = "Texturas de Interfaz",
+                    subtitle = "$activeTextureCount de 4 componentes texturizados (Ajustar/Rellenar/Mosaico)",
+                    icon = Icons.Default.Layers,
+                    iconTint = SpaceCyan,
+                    expanded = texturesExpanded,
+                    onToggle = { texturesExpanded = !texturesExpanded },
+                    headerTag = "section_textures"
+                ) {
+                    TextureSlotControlBlock(
+                        slot = TextureSlot.CARD,
+                        texturePath = settings.cardTexturePath,
+                        textureAlpha = settings.cardTextureAlpha,
+                        scaleMode = settings.cardTextureMode,
+                        onPickTexture = {
+                            pendingTextureSlot = TextureSlot.CARD
+                            imagePickerLauncher.launch("image/*")
+                        },
+                        onClearTexture = { onClearTexture(TextureSlot.CARD) },
+                        onAlphaChange = { alpha ->
+                            onUpdateSettings { it.copy(cardTextureAlpha = alpha) }
+                        },
+                        onScaleModeChange = { mode ->
+                            onUpdateSettings { it.copy(cardTextureMode = mode) }
+                        }
+                    )
+
+                    TextureSlotControlBlock(
+                        slot = TextureSlot.HERO_BUTTON,
+                        texturePath = settings.heroButtonTexturePath,
+                        textureAlpha = settings.heroButtonTextureAlpha,
+                        scaleMode = null,
+                        onPickTexture = {
+                            pendingTextureSlot = TextureSlot.HERO_BUTTON
+                            imagePickerLauncher.launch("image/*")
+                        },
+                        onClearTexture = { onClearTexture(TextureSlot.HERO_BUTTON) },
+                        onAlphaChange = { alpha ->
+                            onUpdateSettings { it.copy(heroButtonTextureAlpha = alpha) }
+                        }
+                    )
+
+                    TextureSlotControlBlock(
+                        slot = TextureSlot.ACTION_BUTTON,
+                        texturePath = settings.actionButtonTexturePath,
+                        textureAlpha = settings.actionButtonTextureAlpha,
+                        scaleMode = null,
+                        onPickTexture = {
+                            pendingTextureSlot = TextureSlot.ACTION_BUTTON
+                            imagePickerLauncher.launch("image/*")
+                        },
+                        onClearTexture = { onClearTexture(TextureSlot.ACTION_BUTTON) },
+                        onAlphaChange = { alpha ->
+                            onUpdateSettings { it.copy(actionButtonTextureAlpha = alpha) }
+                        }
+                    )
+
+                    TextureSlotControlBlock(
+                        slot = TextureSlot.NAV_BAR,
+                        texturePath = settings.navBarTexturePath,
+                        textureAlpha = settings.navBarTextureAlpha,
+                        scaleMode = null,
+                        onPickTexture = {
+                            pendingTextureSlot = TextureSlot.NAV_BAR
+                            imagePickerLauncher.launch("image/*")
+                        },
+                        onClearTexture = { onClearTexture(TextureSlot.NAV_BAR) },
+                        onAlphaChange = { alpha ->
+                            onUpdateSettings { it.copy(navBarTextureAlpha = alpha) }
+                        }
+                    )
+                }
+
+                // Section 3: Granular Typography & Sizing
+                AccordionCustomizationSection(
+                    title = "Tipografía y Tamaños",
+                    subtitle = "Fuentes .ttf/.otf y escala (80%–135%) para títulos, cuerpo y consola",
+                    icon = Icons.Default.FontDownload,
+                    iconTint = SpaceEmerald,
+                    expanded = typographyExpanded,
+                    onToggle = { typographyExpanded = !typographyExpanded },
+                    headerTag = "section_typography"
+                ) {
+                    val fontMimeTypes = remember {
+                        arrayOf(
+                            "font/ttf",
+                            "font/otf",
+                            "application/x-font-ttf",
+                            "application/x-font-opentype",
+                            "application/octet-stream",
+                            "*/*"
+                        )
+                    }
+
+                    FontSlotControlBlock(
+                        slot = FontSlot.TITLE,
+                        fontPath = settings.titleFontPath,
+                        fontScale = settings.titleFontScale,
+                        onPickFont = {
+                            pendingFontSlot = FontSlot.TITLE
+                            fontPickerLauncher.launch(fontMimeTypes)
+                        },
+                        onResetFont = { onClearFont(FontSlot.TITLE) },
+                        onScaleChange = { scale ->
+                            onUpdateSettings { it.copy(titleFontScale = scale) }
+                        }
+                    )
+
+                    FontSlotControlBlock(
+                        slot = FontSlot.BODY,
+                        fontPath = settings.bodyFontPath,
+                        fontScale = settings.bodyFontScale,
+                        onPickFont = {
+                            pendingFontSlot = FontSlot.BODY
+                            fontPickerLauncher.launch(fontMimeTypes)
+                        },
+                        onResetFont = { onClearFont(FontSlot.BODY) },
+                        onScaleChange = { scale ->
+                            onUpdateSettings { it.copy(bodyFontScale = scale) }
+                        }
+                    )
+
+                    FontSlotControlBlock(
+                        slot = FontSlot.TERMINAL,
+                        fontPath = settings.terminalFontPath,
+                        fontScale = settings.terminalFontScale,
+                        onPickFont = {
+                            pendingFontSlot = FontSlot.TERMINAL
+                            fontPickerLauncher.launch(fontMimeTypes)
+                        },
+                        onResetFont = { onClearFont(FontSlot.TERMINAL) },
+                        onScaleChange = { scale ->
+                            onUpdateSettings { it.copy(terminalFontScale = scale) }
+                        }
+                    )
+                }
+
+                // Section 4: Export / Import (.aiotheme) & Factory Reset
+                AccordionCustomizationSection(
+                    title = "Exportar e Importar Tema (.aiotheme)",
+                    subtitle = "Empaqueta colores, texturas y fuentes para compartir o restaurar",
+                    icon = Icons.Default.Share,
+                    iconTint = SpaceAmber,
+                    expanded = themePackExpanded,
+                    onToggle = { themePackExpanded = !themePackExpanded },
+                    headerTag = "section_theme_pack"
+                ) {
+                    Text(
+                        text = "Comparte tu tema completo como paquete .aiotheme (incluye colores, fondo, texturas y fuentes activas).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    AioActionButton(
+                        onClick = {
+                            onExportThemePackage { shareUri ->
+                                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "application/octet-stream"
+                                    putExtra(Intent.EXTRA_STREAM, shareUri)
+                                    putExtra(Intent.EXTRA_SUBJECT, "Tema AIO Tunnel VPN (.aiotheme)")
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(
+                                    Intent.createChooser(sendIntent, "Exportar tema (.aiotheme)")
+                                )
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("theme_export_button")
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Exportar tema (.aiotheme)")
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            themeImportLauncher.launch(
+                                arrayOf("application/zip", "application/octet-stream", "*/*")
+                            )
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .sizeIn(minHeight = 48.dp)
+                            .testTag("theme_import_button")
+                    ) {
+                        Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Importar tema (.aiotheme)")
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                    OutlinedButton(
+                        onClick = onRestoreFactoryDefaults,
+                        border = BorderStroke(1.dp, SpaceCoral.copy(alpha = 0.65f)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = SpaceCoral),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .sizeIn(minHeight = 48.dp)
+                            .testTag("ui_factory_reset_button")
+                    ) {
+                        Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Restaurar aspecto de fábrica")
                     }
                 }
             }
