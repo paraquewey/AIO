@@ -55,10 +55,9 @@ import com.example.domain.models.TunnelProfile
 import com.example.presentation.components.GlassCard
 import com.example.presentation.components.LatencyPill
 import com.example.presentation.components.ProtocolBadge
+import com.example.ui.theme.LocalAioUiStyle
 import com.example.ui.theme.SpaceAmber
 import com.example.ui.theme.SpaceEmerald
-import com.example.ui.theme.SpaceGlassSurface
-import com.example.ui.theme.SpaceViolet
 
 private enum class ServerFilter(val label: String) {
     ALL("Todos"),
@@ -164,7 +163,10 @@ fun ServersScreen(
                 Button(
                     onClick = onAutoSelectFastest,
                     enabled = !isMeasuringLatency && profiles.isNotEmpty(),
-                    colors = ButtonDefaults.buttonColors(containerColor = SpaceViolet),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
                     modifier = Modifier
                         .weight(1f)
                         .testTag("servers_auto_select_button")
@@ -201,7 +203,10 @@ fun ServersScreen(
                         Spacer(Modifier.height(12.dp))
                         Button(
                             onClick = onAddProfile,
-                            colors = ButtonDefaults.buttonColors(containerColor = SpaceViolet)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            )
                         ) {
                             Icon(Icons.Default.Add, contentDescription = null)
                             Spacer(Modifier.width(6.dp))
@@ -236,14 +241,20 @@ private fun ServerItemCard(
     onSelect: () -> Unit,
     onToggleFavorite: () -> Unit
 ) {
-    val borderColor = if (isSelected) SpaceEmerald else MaterialTheme.colorScheme.outline
+    val uiStyle = LocalAioUiStyle.current
+    val borderColor = if (isSelected) SpaceEmerald else uiStyle.cardBorderColor
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onSelect)
             .testTag("server_card_${profile.id}"),
         shape = RoundedCornerShape(20.dp),
-        color = if (isSelected) SpaceEmerald.copy(alpha = 0.11f) else SpaceGlassSurface,
+        color = if (isSelected) {
+            if (uiStyle.isLightForeground) SpaceEmerald.copy(alpha = 0.14f) else uiStyle.cardBackgroundColor
+        } else {
+            uiStyle.cardBackgroundColor
+        },
+        contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(if (isSelected) 1.5.dp else 1.dp, borderColor)
     ) {
         Row(

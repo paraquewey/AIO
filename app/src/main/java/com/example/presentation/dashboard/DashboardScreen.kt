@@ -73,15 +73,11 @@ import com.example.presentation.components.GlassCard
 import com.example.presentation.components.ProtocolBadge
 import com.example.presentation.components.formatDuration
 import com.example.presentation.components.inferCountryFlagForProfile
+import com.example.ui.theme.LocalAioUiStyle
 import com.example.ui.theme.SpaceAmber
 import com.example.ui.theme.SpaceCoral
 import com.example.ui.theme.SpaceEmerald
 import com.example.ui.theme.SpaceGlassHighlight
-import com.example.ui.theme.SpaceGlassSurface
-import com.example.ui.theme.SpaceGlowViolet
-import com.example.ui.theme.SpaceIndigo
-import com.example.ui.theme.SpaceTextSecondary
-import com.example.ui.theme.SpaceViolet
 import com.example.vpn.tun.DnsManager
 
 @Composable
@@ -106,16 +102,19 @@ fun DashboardScreen(
         connectionState is ConnectionState.Reconnecting ||
         connectionState is ConnectionState.Disconnecting
 
+    val uiStyle = LocalAioUiStyle.current
+    val primaryAccent = MaterialTheme.colorScheme.primary
+
     val (statusLabel, accentColor, statusSubLabel) = when (connectionState) {
         is ConnectionState.Disconnected -> Triple(
             "DESCONECTADO",
-            SpaceTextSecondary,
+            MaterialTheme.colorScheme.onSurfaceVariant,
             selectedProfile?.let { "Listo · ${it.name}" } ?: "Selecciona o crea un perfil para conectar"
         )
         is ConnectionState.Preparing -> Triple("PREPARANDO", SpaceAmber, "Inicializando motor...")
         is ConnectionState.Connecting -> Triple(
             "CONECTANDO",
-            SpaceViolet,
+            primaryAccent,
             connectionState.detail.ifBlank { "Estableciendo túnel cifrado..." }
         )
         is ConnectionState.Connected -> Triple(
@@ -179,7 +178,7 @@ fun DashboardScreen(
                         modifier = Modifier
                             .size(34.dp)
                             .clip(RoundedCornerShape(10.dp))
-                            .border(1.dp, SpaceViolet.copy(alpha = 0.45f), RoundedCornerShape(10.dp)),
+                            .border(1.dp, primaryAccent.copy(alpha = 0.45f), RoundedCornerShape(10.dp)),
                         contentScale = ContentScale.Crop
                     )
                     Column {
@@ -198,8 +197,9 @@ fun DashboardScreen(
 
                 Surface(
                     shape = RoundedCornerShape(14.dp),
-                    color = SpaceGlassSurface.copy(alpha = 0.72f),
-                    border = BorderStroke(1.dp, SpaceViolet.copy(alpha = 0.35f))
+                    color = uiStyle.cardBackgroundColor,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    border = BorderStroke(1.dp, primaryAccent.copy(alpha = 0.35f))
                 ) {
                     IconButton(
                         onClick = onOpenConsole,
@@ -223,7 +223,8 @@ fun DashboardScreen(
             ) {
                 Surface(
                     shape = RoundedCornerShape(50),
-                    color = animatedAccent.copy(alpha = 0.14f),
+                    color = animatedAccent.copy(alpha = 0.16f),
+                    contentColor = animatedAccent,
                     border = BorderStroke(1.dp, animatedAccent.copy(alpha = 0.55f))
                 ) {
                     Row(
@@ -272,9 +273,9 @@ fun DashboardScreen(
             // Hero Circular Glass Power Button
             val buttonBorderBrush = Brush.linearGradient(
                 colors = if (isConnected) {
-                    listOf(SpaceEmerald, SpaceViolet)
+                    listOf(SpaceEmerald, primaryAccent)
                 } else {
-                    listOf(SpaceViolet, SpaceIndigo, animatedAccent.copy(alpha = 0.7f))
+                    listOf(primaryAccent, primaryAccent.copy(alpha = 0.75f), animatedAccent.copy(alpha = 0.7f))
                 }
             )
             Box(
@@ -292,7 +293,7 @@ fun DashboardScreen(
                         .background(
                             Brush.radialGradient(
                                 colors = listOf(
-                                    (if (isConnected) SpaceEmerald else SpaceGlowViolet).copy(alpha = 0.28f),
+                                    (if (isConnected) SpaceEmerald else primaryAccent).copy(alpha = 0.28f),
                                     Color.Transparent
                                 )
                             )
@@ -311,8 +312,9 @@ fun DashboardScreen(
                     color = if (isConnected) {
                         SpaceEmerald.copy(alpha = 0.14f)
                     } else {
-                        MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
-                    }
+                        uiStyle.cardElevatedColor
+                    },
+                    contentColor = MaterialTheme.colorScheme.onSurface
                 ) {
                     Box(
                         modifier = Modifier
@@ -335,7 +337,7 @@ fun DashboardScreen(
                                 } else {
                                     "Conectar VPN"
                                 },
-                                tint = if (isConnected) SpaceEmerald else SpaceViolet,
+                                tint = if (isConnected) SpaceEmerald else primaryAccent,
                                 modifier = Modifier.size(46.dp)
                             )
                             Spacer(Modifier.height(6.dp))
@@ -380,7 +382,7 @@ fun DashboardScreen(
                         horizontalArrangement = Arrangement.End
                     ) {
                         TextButton(onClick = onOpenConsole) {
-                            Text("Abrir consola", color = SpaceViolet)
+                            Text("Abrir consola", color = primaryAccent)
                         }
                         TextButton(onClick = onDismissError) {
                             Text("Cerrar", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -410,7 +412,7 @@ fun DashboardScreen(
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                             modifier = Modifier.testTag("dashboard_quick_servers_button")
                         ) {
-                            Text("Ver todos", color = SpaceViolet)
+                            Text("Ver todos", color = primaryAccent)
                         }
                     }
 
@@ -423,19 +425,20 @@ fun DashboardScreen(
                             val flagEmoji = inferCountryFlagForProfile(profile)
                             val pillAccent = when {
                                 isSelected && isConnected -> SpaceEmerald
-                                isSelected -> SpaceViolet
-                                else -> MaterialTheme.colorScheme.outline
+                                isSelected -> primaryAccent
+                                else -> uiStyle.cardBorderColor
                             }
                             Surface(
                                 shape = RoundedCornerShape(16.dp),
                                 color = if (isSelected) {
-                                    pillAccent.copy(alpha = 0.16f)
+                                    pillAccent.copy(alpha = 0.18f)
                                 } else {
-                                    MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
+                                    uiStyle.cardBackgroundColor
                                 },
+                                contentColor = MaterialTheme.colorScheme.onSurface,
                                 border = BorderStroke(
                                     width = if (isSelected) 1.5.dp else 1.dp,
-                                    color = pillAccent.copy(alpha = if (isSelected) 0.75f else 0.35f)
+                                    color = pillAccent.copy(alpha = if (isSelected) 0.75f else 0.45f)
                                 ),
                                 modifier = Modifier
                                     .sizeIn(minHeight = 52.dp)
@@ -496,7 +499,10 @@ fun DashboardScreen(
                         Spacer(Modifier.height(12.dp))
                         Button(
                             onClick = onOpenCreateConfig,
-                            colors = ButtonDefaults.buttonColors(containerColor = SpaceViolet),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = primaryAccent,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            ),
                             modifier = Modifier.testTag("dashboard_create_first_profile_button")
                         ) {
                             Text("Crear o importar perfil")
@@ -553,7 +559,7 @@ fun DashboardScreen(
                                 if (connected != null) {
                                     SpaceEmerald.copy(alpha = 0.14f)
                                 } else {
-                                    SpaceViolet.copy(alpha = 0.14f)
+                                    primaryAccent.copy(alpha = 0.14f)
                                 }
                             )
                             .border(
@@ -561,7 +567,7 @@ fun DashboardScreen(
                                 color = if (connected != null) {
                                     SpaceEmerald.copy(alpha = 0.45f)
                                 } else {
-                                    SpaceViolet.copy(alpha = 0.40f)
+                                    primaryAccent.copy(alpha = 0.40f)
                                 },
                                 shape = CircleShape
                             ),
@@ -576,7 +582,7 @@ fun DashboardScreen(
                             Icon(
                                 imageVector = Icons.Default.Shield,
                                 contentDescription = "Estado protegido",
-                                tint = SpaceViolet,
+                                tint = primaryAccent,
                                 modifier = Modifier.size(26.dp)
                             )
                         }

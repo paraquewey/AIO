@@ -63,10 +63,9 @@ import androidx.compose.ui.unit.dp
 import com.example.domain.models.TunnelProfile
 import com.example.presentation.components.GlassCard
 import com.example.presentation.components.ProtocolBadge
+import com.example.ui.theme.LocalAioUiStyle
 import com.example.ui.theme.SpaceAmber
 import com.example.ui.theme.SpaceCoral
-import com.example.ui.theme.SpaceGlassSurface
-import com.example.ui.theme.SpaceViolet
 import kotlinx.coroutines.launch
 import java.nio.charset.StandardCharsets
 
@@ -166,7 +165,10 @@ fun ConfigsScreen(
                 )
                 Button(
                     onClick = onCreateNew,
-                    colors = ButtonDefaults.buttonColors(containerColor = SpaceViolet),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
                     modifier = Modifier.testTag("configs_create_button")
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -393,10 +395,12 @@ private fun ConfigItemCard(
     onCopyUri: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val uiStyle = LocalAioUiStyle.current
     Surface(
         shape = RoundedCornerShape(20.dp),
-        color = SpaceGlassSurface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+        color = uiStyle.cardBackgroundColor,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(1.dp, uiStyle.cardBorderColor)
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -428,7 +432,8 @@ private fun ConfigItemCard(
                     profile.tags.take(4).forEach { tag ->
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            contentColor = MaterialTheme.colorScheme.onSurface
                         ) {
                             Text(
                                 text = "#$tag",

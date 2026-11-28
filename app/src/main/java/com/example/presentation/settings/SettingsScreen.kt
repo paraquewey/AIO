@@ -29,11 +29,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestartAlt
@@ -79,11 +84,12 @@ import com.example.domain.models.AppSettings
 import com.example.domain.models.DnsMode
 import com.example.domain.models.NetworkPreset
 import com.example.presentation.components.GlassCard
+import androidx.compose.ui.graphics.Color
+import com.example.ui.theme.LocalAioUiStyle
 import com.example.ui.theme.SpaceAmber
 import com.example.ui.theme.SpaceCoral
 import com.example.ui.theme.SpaceCyan
 import com.example.ui.theme.SpaceEmerald
-import com.example.ui.theme.SpaceViolet
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -93,6 +99,7 @@ fun SettingsScreen(
     wifiProxyActivePort: Int?,
     onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit,
     onClearKnownHosts: () -> Unit,
+    onOpenUiCustomization: () -> Unit = {},
     onShowMessage: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -144,11 +151,14 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            val primaryAccent = MaterialTheme.colorScheme.primary
+            val uiStyle = LocalAioUiStyle.current
+
             Text("Ajustes", style = MaterialTheme.typography.headlineMedium)
 
             // 1. Connection & Resilience (Auto-reconnect + Timeout)
             GlassCard {
-                Text("Conexión y resiliencia", style = MaterialTheme.typography.titleMedium, color = SpaceViolet)
+                Text("Conexión y resiliencia", style = MaterialTheme.typography.titleMedium, color = primaryAccent)
                 Spacer(Modifier.height(6.dp))
 
                 SettingSwitchRow(
@@ -291,7 +301,8 @@ fun SettingsScreen(
 
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    color = uiStyle.cardElevatedColor,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
                     border = BorderStroke(1.dp, proxyStatusColor.copy(alpha = 0.45f))
                 ) {
                     Column(
@@ -426,6 +437,7 @@ fun SettingsScreen(
                     Surface(
                         shape = RoundedCornerShape(50),
                         color = (if (isIgnoringBatteryOpt) SpaceEmerald else SpaceAmber).copy(alpha = 0.16f),
+                        contentColor = if (isIgnoringBatteryOpt) SpaceEmerald else SpaceAmber,
                         border = BorderStroke(
                             1.dp,
                             (if (isIgnoringBatteryOpt) SpaceEmerald else SpaceAmber).copy(alpha = 0.6f)
@@ -532,9 +544,65 @@ fun SettingsScreen(
                 )
             }
 
-            // Appearance & Language
+            // Appearance, UI Customization & Language
+            GlassCard(
+                borderColor = primaryAccent.copy(alpha = 0.45f),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .clickable(onClick = onOpenUiCustomization)
+                    .testTag("settings_ui_customization_card")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .sizeIn(minHeight = 48.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(primaryAccent.copy(alpha = 0.16f))
+                                .border(1.dp, primaryAccent.copy(alpha = 0.5f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Palette,
+                                contentDescription = null,
+                                tint = primaryAccent,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Personalización de Interfaz",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = primaryAccent
+                            )
+                            val bgSummary = if (!settings.customBackgroundPath.isNullOrBlank()) "Fondo propio" else "Fondo Space"
+                            Text(
+                                text = "Fuente: ${settings.fontColorMode.label} · $bgSummary · Color principal",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = "Abrir Personalización de Interfaz",
+                        tint = primaryAccent
+                    )
+                }
+            }
+
             GlassCard {
-                Text("Apariencia e idioma", style = MaterialTheme.typography.titleMedium, color = SpaceViolet)
+                Text("Apariencia e idioma", style = MaterialTheme.typography.titleMedium, color = primaryAccent)
                 Spacer(Modifier.height(6.dp))
                 SettingSwitchRow(
                     title = "Tema claro espacial (desactivado = Space Glass oscuro)",
@@ -605,7 +673,7 @@ fun SettingsScreen(
             }
 
             // Expandable Advanced Network & Engine Tuning Drawer (Bottom of Settings)
-            GlassCard(borderColor = SpaceViolet.copy(alpha = 0.45f)) {
+            GlassCard(borderColor = primaryAccent.copy(alpha = 0.45f)) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -620,7 +688,7 @@ fun SettingsScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.weight(1f)
                     ) {
-                        Icon(Icons.Default.Tune, contentDescription = null, tint = SpaceViolet)
+                        Icon(Icons.Default.Tune, contentDescription = null, tint = primaryAccent)
                         Spacer(Modifier.width(10.dp))
                         Column {
                             Text(
@@ -637,7 +705,7 @@ fun SettingsScreen(
                     Icon(
                         imageVector = if (advancedExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                         contentDescription = if (advancedExpanded) "Contraer ajustes avanzados" else "Expandir ajustes avanzados",
-                        tint = SpaceViolet
+                        tint = primaryAccent
                     )
                 }
 
@@ -668,13 +736,14 @@ fun SettingsScreen(
                                 Surface(
                                     shape = RoundedCornerShape(14.dp),
                                     color = if (selected) {
-                                        SpaceViolet.copy(alpha = 0.16f)
+                                        primaryAccent.copy(alpha = 0.16f)
                                     } else {
-                                        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.45f)
+                                        uiStyle.cardElevatedColor
                                     },
+                                    contentColor = MaterialTheme.colorScheme.onSurface,
                                     border = BorderStroke(
                                         width = if (selected) 1.5.dp else 1.dp,
-                                        color = if (selected) SpaceViolet else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                                        color = if (selected) primaryAccent else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
                                     ),
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -838,6 +907,45 @@ fun SettingsScreen(
                         ) { v ->
                             onUpdateSettings {
                                 it.copy(sshCompression = v, networkPreset = NetworkPreset.CUSTOM)
+                            }
+                        }
+
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Cola del TUN (Backpressure Queue)", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    text = "${settings.tunQueueCapacity.coerceIn(32, 256)} paq.",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = SpaceCyan
+                                )
+                            }
+                            Slider(
+                                value = settings.tunQueueCapacity.coerceIn(32, 256).toFloat(),
+                                onValueChange = { raw ->
+                                    val cap = raw.roundToInt().coerceIn(32, 256)
+                                    onUpdateSettings {
+                                        it.copy(
+                                            tunQueueCapacity = cap,
+                                            networkPreset = NetworkPreset.CUSTOM
+                                        )
+                                    }
+                                },
+                                valueRange = 32f..256f,
+                                modifier = Modifier.testTag("settings_tun_queue_slider")
+                            )
+                        }
+
+                        SettingSwitchRow(
+                            title = "Caché DNS Inteligente (Stale-While-Revalidate)",
+                            subtitle = "Responde dominios frecuentes al instante (0 ms) y refresca TTL en segundo plano",
+                            checked = settings.smartDnsCacheEnabled,
+                            testTag = "settings_smart_dns_cache_switch"
+                        ) { v ->
+                            onUpdateSettings {
+                                it.copy(smartDnsCacheEnabled = v, networkPreset = NetworkPreset.CUSTOM)
                             }
                         }
 

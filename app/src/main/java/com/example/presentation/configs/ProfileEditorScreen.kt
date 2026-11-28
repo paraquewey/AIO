@@ -76,7 +76,7 @@ import com.example.ui.theme.SpaceAmber
 import com.example.ui.theme.SpaceCoral
 import com.example.ui.theme.SpaceCyan
 import com.example.ui.theme.SpaceEmerald
-import com.example.ui.theme.SpaceViolet
+import com.example.ui.theme.computeContrastingOnAccent
 import java.util.UUID
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -360,7 +360,7 @@ fun ProfileEditorScreen(
                                     Icon(
                                         Icons.Default.Check,
                                         contentDescription = "Color seleccionado",
-                                        tint = Color.Black,
+                                        tint = computeContrastingOnAccent(Color(hex)),
                                         modifier = Modifier.size(16.dp)
                                     )
                                 }
@@ -371,7 +371,7 @@ fun ProfileEditorScreen(
 
                 // Protocol Selection (Phase A built-in vs Phase C adapter)
                 GlassCard {
-                    Text("Protocolo de túnel", style = MaterialTheme.typography.titleMedium, color = SpaceViolet)
+                    Text("Protocolo de túnel", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.height(6.dp))
                     Text(
                         text = "Motores integrados listos: HTTP, HTTPS, SOCKS5, SSH y SSH Jump Host.",
@@ -724,7 +724,7 @@ fun ProfileEditorScreen(
 
                 // Custom Server Message (HTML / CSS / JS)
                 GlassCard {
-                    Text("Mensaje del Servidor (Server Message)", style = MaterialTheme.typography.titleMedium, color = SpaceViolet)
+                    Text("Mensaje del Servidor (Server Message)", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.height(6.dp))
                     Text(
                         text = "Controla cómo se muestra el banner al conectarse en la consola de registros.",

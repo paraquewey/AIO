@@ -3,6 +3,7 @@ package com.example.vpn.tun
 import com.example.core.logger.AppLogger
 import com.example.domain.models.AppSettings
 import com.example.domain.models.DnsMode
+import com.example.domain.models.EngineTuningConfig
 import com.example.domain.models.TunnelProfile
 import com.example.engines.adapter.TunnelEngine
 import com.example.engines.adapter.TunnelStream
@@ -52,8 +53,17 @@ class DnsManager(
     private val protectSocket: (Socket) -> Boolean = { true },
     private val protectDatagramSocket: (DatagramSocket) -> Boolean = { true },
     internal val dohSslSocketFactoryOverride: SSLSocketFactory? = null,
-    internal val dohTrustManagerOverride: X509TrustManager? = null
+    internal val dohTrustManagerOverride: X509TrustManager? = null,
+    initialSmartCacheEnabled: Boolean = true
 ) : Closeable {
+    @Volatile
+    private var smartCacheEnabled: Boolean = initialSmartCacheEnabled
+
+    fun updateTuning(config: EngineTuningConfig) {
+        smartCacheEnabled = config.smartDnsCacheEnabled
+    }
+
+    fun isSmartCacheEnabled(): Boolean = smartCacheEnabled
     data class ResolvedDnsConfig(
         val dnsMode: DnsMode,
         val primaryDns: String,
@@ -271,7 +281,8 @@ class DnsManager(
         if (queryBytes.size < 12) return@withContext null
 
         val cacheScopeKey = "${dnsConfig.dnsMode.name}:${dnsConfig.primaryDns}:${dnsConfig.dohUrl}"
-        if (!bypassCache) {
+        val useCache = !bypassCache && smartCacheEnabled
+        if (useCache) {
             lookupCachedResponseWithStale(queryBytes, cacheScopeKey)?.let { hit ->
                 if (hit.isStale) {
                     scheduleBackgroundCacheRefresh(
@@ -289,7 +300,7 @@ class DnsManager(
 
         val resolved = queryUpstreamByMode(queryBytes, dnsConfig, engine, udpRelay)
 
-        if (resolved != null && !bypassCache) {
+        if (resolved != null && useCache) {
             storeCachedResponse(queryBytes, resolved, cacheScopeKey)
         }
         resolved
@@ -510,7 +521,8 @@ class DnsManager(
         val secondary = secondaryDns.trim()
         val scopeKey = "TCP:$primary:$secondary"
 
-        if (!bypassCache) {
+        val useCache = !bypassCache && smartCacheEnabled
+        if (useCache) {
             lookupCachedResponse(queryBytes, scopeKey)?.let { cached ->
                 return@withContext DnsResolutionResult(
                     responseBytes = cached,
@@ -523,7 +535,7 @@ class DnsManager(
 
         val first = resolveViaTunnelTcp(queryBytes, primary, engine)
         if (first != null) {
-            if (!bypassCache) storeCachedResponse(queryBytes, first, scopeKey)
+            if (useCache) storeCachedResponse(queryBytes, first, scopeKey)
             return@withContext DnsResolutionResult(
                 responseBytes = first,
                 serverLabel = "$primary:53 (TCP)",
@@ -534,7 +546,7 @@ class DnsManager(
         if (secondary.isNotBlank() && secondary != primary) {
             val second = resolveViaTunnelTcp(queryBytes, secondary, engine)
             if (second != null) {
-                if (!bypassCache) storeCachedResponse(queryBytes, second, scopeKey)
+                if (useCache) storeCachedResponse(queryBytes, second, scopeKey)
                 return@withContext DnsResolutionResult(
                     responseBytes = second,
                     serverLabel = "$secondary:53 (TCP fallback)",
@@ -622,7 +634,8 @@ class DnsManager(
         bypassCache: Boolean = false
     ): DnsResolutionResult = withContext(Dispatchers.IO) {
         val scopeKey = "DOH:${dnsConfig.primaryDns}:${dnsConfig.dohUrl}"
-        if (!bypassCache) {
+        val useCache = !bypassCache && smartCacheEnabled
+        if (useCache) {
             lookupCachedResponse(queryBytes, scopeKey)?.let { cached ->
                 return@withContext DnsResolutionResult(
                     responseBytes = cached,
@@ -651,7 +664,7 @@ class DnsManager(
                     executeDohOkHttpPost(client, candidate, queryBytes)
                 }
                 if (resp != null && resp.size >= 12) {
-                    if (!bypassCache) storeCachedResponse(queryBytes, resp, scopeKey)
+                    if (useCache) storeCachedResponse(queryBytes, resp, scopeKey)
                     return@withContext DnsResolutionResult(
                         responseBytes = resp,
                         serverLabel = candidate.url,

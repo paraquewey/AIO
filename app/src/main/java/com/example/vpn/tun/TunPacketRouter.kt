@@ -27,10 +27,83 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.util.ArrayDeque
 import java.util.TreeMap
-import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
+
+internal class DynamicBoundedPacketQueue(initialCapacity: Int = 64) {
+    private val lock = ReentrantLock()
+    private val notEmpty = lock.newCondition()
+    private val notFull = lock.newCondition()
+    private val deque = ArrayDeque<ByteArray>()
+    private var maxCapacity: Int = initialCapacity.coerceIn(32, 256)
+
+    fun setCapacity(newCapacity: Int) {
+        lock.lock()
+        try {
+            maxCapacity = newCapacity.coerceIn(32, 256)
+            notFull.signalAll()
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun capacity(): Int {
+        lock.lock()
+        return try {
+            maxCapacity
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun size(): Int {
+        lock.lock()
+        return try {
+            deque.size
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun put(packet: ByteArray) {
+        lock.lockInterruptibly()
+        try {
+            while (deque.size >= maxCapacity) {
+                notFull.await()
+            }
+            deque.addLast(packet)
+            notEmpty.signal()
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun take(): ByteArray {
+        lock.lockInterruptibly()
+        try {
+            while (deque.isEmpty()) {
+                notEmpty.await()
+            }
+            val pkt = deque.removeFirst()
+            notFull.signal()
+            return pkt
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun clear() {
+        lock.lock()
+        try {
+            deque.clear()
+            notFull.signalAll()
+        } finally {
+            lock.unlock()
+        }
+    }
+}
 
 class TunPacketRouter(
     private val tunFd: ParcelFileDescriptor,
@@ -44,9 +117,6 @@ class TunPacketRouter(
     @Volatile
     private var tuningConfig: EngineTuningConfig = initialTuning
 
-    fun updateTuning(config: EngineTuningConfig) {
-        tuningConfig = config
-    }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val dnsSemaphore = Semaphore(24)
     private val running = AtomicBoolean(false)
@@ -60,8 +130,15 @@ class TunPacketRouter(
     private val dnsOutboundChannel = Channel<OutboundTask.DnsQuery>(capacity = Channel.UNLIMITED)
     private val outboundChannel = Channel<OutboundTask>(capacity = Channel.UNLIMITED)
 
-    // Bounded FIFO TUN write queue providing real blocking backpressure to SSH channel readers (no packet drops)
-    private val tunWriteQueue = ArrayBlockingQueue<ByteArray>(TUN_WRITE_QUEUE_CAPACITY)
+    // Dynamically bounded FIFO TUN write queue providing real blocking backpressure to SSH channel readers
+    private val tunWriteQueue = DynamicBoundedPacketQueue(initialTuning.clampedTunQueueCapacity)
+
+    fun updateTuning(config: EngineTuningConfig) {
+        tuningConfig = config
+        tunWriteQueue.setCapacity(config.clampedTunQueueCapacity)
+    }
+
+    internal fun currentTunQueueCapacity(): Int = tunWriteQueue.capacity()
 
     @Volatile
     private var udpRelaySession: UdpRelaySession? = null
@@ -173,7 +250,7 @@ class TunPacketRouter(
         }
         AppLogger.info(
             TAG,
-            "Router TUN FIFO activo (buf=${tuningConfig.transferBufferKb} KB, flush=${if (tuningConfig.immediateFlush) "inmediato" else "agrupado"}, cola TUN=$TUN_WRITE_QUEUE_CAPACITY, DNS Fast-Lane UDP/53, DNS1=${dnsConfig.primaryDns}, DNS2=${dnsConfig.secondaryDns}, modo=${dnsConfig.dnsMode.name})"
+            "Router TUN FIFO activo (buf=${tuningConfig.transferBufferKb} KB, flush=${if (tuningConfig.immediateFlush) "inmediato" else "agrupado"}, cola TUN=${tunWriteQueue.capacity()}, DNS Fast-Lane UDP/53, DNS1=${dnsConfig.primaryDns}, DNS2=${dnsConfig.secondaryDns}, modo=${dnsConfig.dnsMode.name})"
         )
 
         startTunWriterLoop()

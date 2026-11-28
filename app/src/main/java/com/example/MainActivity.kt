@@ -37,6 +37,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -74,11 +75,12 @@ import com.example.presentation.diagnostics.DiagnosticsScreen
 import com.example.presentation.navigation.AioRoute
 import com.example.presentation.servers.ServersScreen
 import com.example.presentation.settings.SettingsScreen
+import com.example.presentation.settings.UiCustomizationScreen
 import com.example.presentation.state.MainViewModel
 import com.example.ui.theme.AioTunnelTheme
+import com.example.ui.theme.LocalAioUiStyle
 import com.example.ui.theme.SpaceEmerald
-import com.example.ui.theme.SpaceGlassSurfaceElevated
-import com.example.ui.theme.SpaceViolet
+import com.example.ui.theme.computeEffectiveBackgroundLuminance
 
 private data class TopLevelDestination(
     val route: AioRoute,
@@ -189,12 +191,35 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
         )
     }
 
-    AioTunnelTheme(useLightTheme = settings.useLightTheme) {
+    val hasCustomBg = !settings.customBackgroundPath.isNullOrBlank()
+    val effectiveLuminance = remember(
+        hasCustomBg,
+        settings.customBackgroundLuminance,
+        settings.backgroundDimmerAlpha,
+        settings.useLightTheme
+    ) {
+        computeEffectiveBackgroundLuminance(
+            hasCustomBg = hasCustomBg,
+            rawBgLuminance = settings.customBackgroundLuminance,
+            dimmerAlpha = settings.backgroundDimmerAlpha,
+            useLightTheme = settings.useLightTheme
+        )
+    }
+    val primaryAccent = Color(settings.primaryAccentArgb)
+
+    AioTunnelTheme(
+        useLightTheme = settings.useLightTheme,
+        primaryAccent = primaryAccent,
+        fontColorMode = settings.fontColorMode,
+        effectiveBackgroundLuminance = effectiveLuminance,
+        hasCustomBackground = hasCustomBg
+    ) {
         val navController = rememberNavController()
         val backStackEntry by navController.currentBackStackEntryAsState()
         val currentDestination = backStackEntry?.destination
-        val isEditorOrConsole = currentDestination?.hasRoute<AioRoute.ProfileEditor>() == true ||
-            currentDestination?.hasRoute<AioRoute.Diagnostics>() == true
+        val isSubScreen = currentDestination?.hasRoute<AioRoute.ProfileEditor>() == true ||
+            currentDestination?.hasRoute<AioRoute.Diagnostics>() == true ||
+            currentDestination?.hasRoute<AioRoute.UiCustomization>() == true
 
         val navigateTopLevel: (AioRoute) -> Unit = { route ->
             navController.navigate(route) {
@@ -206,15 +231,17 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
             }
         }
 
-        val navBarColor = if (settings.useLightTheme) {
-            MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
-        } else {
-            SpaceGlassSurfaceElevated
-        }
+        val uiStyle = LocalAioUiStyle.current
+        val navBarColor = uiStyle.cardElevatedColor
+        val activeAccent = MaterialTheme.colorScheme.primary
 
         SpaceGlassBackground(
             isConnected = connectionState is ConnectionState.Connected,
             useLightTheme = settings.useLightTheme,
+            customBackgroundPath = settings.customBackgroundPath,
+            customBackgroundVersion = settings.customBackgroundVersion,
+            backgroundDimmerAlpha = settings.backgroundDimmerAlpha,
+            primaryAccent = activeAccent,
             modifier = Modifier.fillMaxSize()
         ) {
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -223,13 +250,15 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
                     containerColor = Color.Transparent,
+                    contentColor = MaterialTheme.colorScheme.onBackground,
                     contentWindowInsets = WindowInsets.safeDrawing,
                     snackbarHost = { SnackbarHost(snackbarHostState) },
                     bottomBar = {
-                        if (!useNavRail && !isEditorOrConsole) {
+                        if (!useNavRail && !isSubScreen) {
                             NavigationBar(
                                 windowInsets = WindowInsets.navigationBars,
-                                containerColor = navBarColor
+                                containerColor = navBarColor,
+                                contentColor = MaterialTheme.colorScheme.onSurface
                             ) {
                                 topDestinations.forEach { dest ->
                                     val selected = currentDestination?.hasRoute(dest.route::class) == true
@@ -246,7 +275,9 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
                                         colors = NavigationBarItemDefaults.colors(
                                             selectedIconColor = SpaceEmerald,
                                             selectedTextColor = SpaceEmerald,
-                                            indicatorColor = SpaceViolet.copy(alpha = 0.22f)
+                                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            indicatorColor = activeAccent.copy(alpha = 0.22f)
                                         ),
                                         modifier = Modifier.testTag(dest.testTag)
                                     )
@@ -260,8 +291,11 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
                             .fillMaxSize()
                             .padding(innerPadding)
                     ) {
-                        if (useNavRail && !isEditorOrConsole) {
-                            NavigationRail(containerColor = navBarColor) {
+                        if (useNavRail && !isSubScreen) {
+                            NavigationRail(
+                                containerColor = navBarColor,
+                                contentColor = MaterialTheme.colorScheme.onSurface
+                            ) {
                                 topDestinations.forEach { dest ->
                                     val selected = currentDestination?.hasRoute(dest.route::class) == true
                                     NavigationRailItem(
@@ -274,6 +308,13 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
                                             )
                                         },
                                         label = { Text(dest.label) },
+                                        colors = NavigationRailItemDefaults.colors(
+                                            selectedIconColor = SpaceEmerald,
+                                            selectedTextColor = SpaceEmerald,
+                                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            indicatorColor = activeAccent.copy(alpha = 0.22f)
+                                        ),
                                         modifier = Modifier.testTag(dest.testTag)
                                     )
                                 }
@@ -362,7 +403,17 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
                                         wifiProxyActivePort = wifiProxyActivePort,
                                         onUpdateSettings = { viewModel.updateSettings(it) },
                                         onClearKnownHosts = { viewModel.clearAllKnownHosts() },
+                                        onOpenUiCustomization = { navController.navigate(AioRoute.UiCustomization) },
                                         onShowMessage = { viewModel.postMessage(it) }
+                                    )
+                                }
+                                composable<AioRoute.UiCustomization> {
+                                    UiCustomizationScreen(
+                                        settings = settings,
+                                        onUpdateSettings = { viewModel.updateSettings(it) },
+                                        onPickCustomBackground = { uri -> viewModel.importCustomBackground(uri) },
+                                        onResetCustomBackground = { viewModel.clearCustomBackground() },
+                                        onBack = { navController.popBackStack() }
                                     )
                                 }
                                 composable<AioRoute.ProfileEditor> { entry ->

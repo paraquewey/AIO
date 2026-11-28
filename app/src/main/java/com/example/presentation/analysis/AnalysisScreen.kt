@@ -66,12 +66,11 @@ import com.example.domain.models.SpeedSample
 import com.example.domain.models.SpeedTestState
 import com.example.domain.models.TunnelProfile
 import com.example.presentation.components.GlassCard
+import com.example.ui.theme.LocalAioUiStyle
 import com.example.ui.theme.SpaceAmber
 import com.example.ui.theme.SpaceCoral
 import com.example.ui.theme.SpaceCyan
 import com.example.ui.theme.SpaceEmerald
-import com.example.ui.theme.SpaceIndigo
-import com.example.ui.theme.SpaceViolet
 import com.example.vpn.tun.DnsManager
 import kotlin.math.max
 
@@ -121,7 +120,7 @@ fun AnalysisScreen(
                     Icon(
                         imageVector = Icons.Default.Analytics,
                         contentDescription = null,
-                        tint = SpaceViolet,
+                        tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(28.dp)
                     )
                     Spacer(Modifier.width(10.dp))
@@ -138,7 +137,7 @@ fun AnalysisScreen(
             }
 
             // 1. Speed & Burst Acceleration Scanner
-            GlassCard(borderColor = SpaceViolet.copy(alpha = 0.45f)) {
+            GlassCard(borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -190,7 +189,7 @@ fun AnalysisScreen(
                     AnalysisStatPill(
                         label = "Subida",
                         value = speedTestState.uploadMbps?.let { String.format("%.2f Mbps", it) } ?: "—",
-                        accent = SpaceViolet,
+                        accent = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.weight(1f)
                     )
                     AnalysisStatPill(
@@ -210,7 +209,10 @@ fun AnalysisScreen(
                 Button(
                     onClick = onRunSpeedTest,
                     enabled = !speedTestState.isRunning,
-                    colors = ButtonDefaults.buttonColors(containerColor = SpaceViolet),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("analysis_speed_button")
@@ -219,7 +221,7 @@ fun AnalysisScreen(
                         CircularProgressIndicator(
                             modifier = Modifier.size(18.dp),
                             strokeWidth = 2.dp,
-                            color = Color.White
+                            color = MaterialTheme.colorScheme.onPrimary
                         )
                         Spacer(Modifier.width(8.dp))
                         Text("Midiendo velocidad real...")
@@ -304,7 +306,7 @@ fun AnalysisScreen(
                     AnalysisStatPill(
                         label = "Jitter",
                         value = stabilityState.jitterMs?.let { "$it ms" } ?: "—",
-                        accent = SpaceViolet,
+                        accent = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.weight(1f)
                     )
                     AnalysisStatPill(
@@ -467,9 +469,11 @@ fun AnalysisScreen(
 
                 if (dnsLeakReport.activeModeLabel.isNotBlank() || dnsLeakReport.leakStatus.isNotBlank()) {
                     Spacer(Modifier.height(12.dp))
+                    val uiStyle = LocalAioUiStyle.current
                     Surface(
                         shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.55f),
+                        color = uiStyle.cardElevatedColor,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
                     ) {
                         Column(
@@ -510,6 +514,7 @@ private fun ModeBadge(isTunnelActive: Boolean) {
     Surface(
         shape = RoundedCornerShape(50),
         color = color.copy(alpha = 0.14f),
+        contentColor = color,
         border = BorderStroke(1.dp, color.copy(alpha = 0.5f))
     ) {
         Text(
@@ -528,10 +533,12 @@ private fun AnalysisStatPill(
     accent: Color,
     modifier: Modifier = Modifier
 ) {
+    val uiStyle = LocalAioUiStyle.current
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.55f),
+        color = uiStyle.cardElevatedColor,
+        contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(1.dp, accent.copy(alpha = 0.30f))
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
@@ -579,10 +586,14 @@ private fun AuditRow(label: String, value: String) {
 
 @Composable
 private fun SpeedCurveCanvas(samples: List<SpeedSample>) {
+    val primaryAccent = MaterialTheme.colorScheme.primary
+    val uiStyle = LocalAioUiStyle.current
+    val gridColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f),
-        border = BorderStroke(1.dp, SpaceViolet.copy(alpha = 0.25f))
+        color = uiStyle.cardElevatedColor,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(1.dp, primaryAccent.copy(alpha = 0.28f))
     ) {
         Box(
             modifier = Modifier
@@ -601,7 +612,6 @@ private fun SpeedCurveCanvas(samples: List<SpeedSample>) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val w = size.width
                     val h = size.height
-                    val gridColor = Color.White.copy(alpha = 0.08f)
                     for (i in 1..3) {
                         val y = h * (i / 4f)
                         drawLine(gridColor, Offset(0f, y), Offset(w, y), strokeWidth = 1.dp.toPx())
@@ -641,14 +651,14 @@ private fun SpeedCurveCanvas(samples: List<SpeedSample>) {
                         brush = Brush.verticalGradient(
                             colors = listOf(
                                 SpaceEmerald.copy(alpha = 0.34f),
-                                SpaceIndigo.copy(alpha = 0.14f),
+                                primaryAccent.copy(alpha = 0.14f),
                                 Color.Transparent
                             )
                         )
                     )
                     drawPath(
                         path = linePath,
-                        brush = Brush.horizontalGradient(listOf(SpaceViolet, SpaceEmerald)),
+                        brush = Brush.horizontalGradient(listOf(primaryAccent, SpaceEmerald)),
                         style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
                     )
 
@@ -666,10 +676,12 @@ private fun SpeedCurveCanvas(samples: List<SpeedSample>) {
 
 @Composable
 private fun LatencyBarsCanvas(samples: List<Long?>) {
+    val uiStyle = LocalAioUiStyle.current
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f),
-        border = BorderStroke(1.dp, SpaceCyan.copy(alpha = 0.22f))
+        color = uiStyle.cardElevatedColor,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(1.dp, SpaceCyan.copy(alpha = 0.25f))
     ) {
         Box(
             modifier = Modifier

@@ -119,11 +119,68 @@ class AioRobolectricUiTest {
         }
         composeRule.onNodeWithTag("settings_kill_switch").performScrollTo().assertIsOn()
 
+        // Verify TUN queue slider and Smart DNS SWR switch inside advanced drawer
+        composeRule.onNodeWithTag("settings_tun_queue_slider").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_smart_dns_cache_switch").performScrollTo().assertIsOn().performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithText("Perfil actual: Personalizado", substring = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
         composeRule.onNodeWithTag("settings_restore_optimal_button").performScrollTo().performClick()
         composeRule.waitUntil(timeoutMillis = 5_000L) {
             composeRule.onAllNodesWithText("Perfil actual: Equilibrado (Recomendado)", substring = true)
                 .fetchSemanticsNodes().isNotEmpty()
         }
+        composeRule.onNodeWithTag("settings_smart_dns_cache_switch").performScrollTo().assertIsOn()
+    }
+
+    @Test
+    fun `ui customization subscreen switches font contrast modes and primary accent`() {
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("nav_settings").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("settings_ui_customization_card").performScrollTo().performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("font_mode_adaptive").assertIsDisplayed()
+        composeRule.onNodeWithTag("font_mode_white").performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithText("Texto activo: Claro (#F8FAFC)", substring = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        composeRule.onNodeWithTag("font_mode_black").performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithText("Texto activo: Oscuro (#0F172A)", substring = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        composeRule.onNodeWithTag("font_mode_adaptive").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("ui_custom_pick_bg_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("ui_custom_reset_bg_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("ui_custom_dimmer_slider").performScrollTo().assertIsDisplayed()
+
+        composeRule.onNodeWithTag("accent_swatch_1").performScrollTo().performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithText("#00E5A8", substring = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        composeRule.onNodeWithTag("accent_hue_slider").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("accent_sat_slider").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("ui_custom_reset_accent_button").performScrollTo().performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithText("#7B61FF", substring = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        composeRule.onNodeWithTag("ui_custom_back_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_ui_customization_card").assertIsDisplayed()
     }
 
     @Test

@@ -5,12 +5,15 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.domain.models.AppLanguage
 import com.example.domain.models.AppSettings
 import com.example.domain.models.DnsMode
+import com.example.domain.models.FontColorMode
 import com.example.domain.models.NetworkPreset
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -41,6 +44,14 @@ class SettingsDataStore(private val context: Context) {
         val VERBOSE_LOGS = booleanPreferencesKey("verbose_logs")
         val WAKE_LOCK_ENABLED = booleanPreferencesKey("wake_lock_enabled")
 
+        // UI Personalization
+        val FONT_COLOR_MODE = stringPreferencesKey("font_color_mode")
+        val CUSTOM_BG_PATH = stringPreferencesKey("custom_bg_path")
+        val CUSTOM_BG_LUMINANCE = floatPreferencesKey("custom_bg_luminance")
+        val CUSTOM_BG_VERSION = longPreferencesKey("custom_bg_version")
+        val BG_DIMMER_ALPHA = floatPreferencesKey("bg_dimmer_alpha")
+        val PRIMARY_ACCENT_ARGB = longPreferencesKey("primary_accent_argb")
+
         // Advanced Engine & Performance Tuning
         val NETWORK_PRESET = stringPreferencesKey("network_preset")
         val TRANSFER_BUFFER_KB = intPreferencesKey("transfer_buffer_kb")
@@ -51,6 +62,8 @@ class SettingsDataStore(private val context: Context) {
         val TCP_NO_DELAY = booleanPreferencesKey("tcp_no_delay")
         val SSH_COMPRESSION = booleanPreferencesKey("ssh_compression")
         val STRICT_KILL_SWITCH = booleanPreferencesKey("strict_kill_switch")
+        val TUN_QUEUE_CAPACITY = intPreferencesKey("tun_queue_capacity")
+        val SMART_DNS_CACHE_ENABLED = booleanPreferencesKey("smart_dns_cache_enabled")
     }
 
     private fun decodeSettings(prefs: Preferences): AppSettings = AppSettings(
@@ -77,6 +90,14 @@ class SettingsDataStore(private val context: Context) {
         strictTlsVerification = prefs[Keys.STRICT_TLS] ?: true,
         verboseDebugLogs = prefs[Keys.VERBOSE_LOGS] ?: false,
         wakeLockEnabled = prefs[Keys.WAKE_LOCK_ENABLED] ?: true,
+        fontColorMode = prefs[Keys.FONT_COLOR_MODE]?.let {
+            runCatching { FontColorMode.valueOf(it) }.getOrNull()
+        } ?: FontColorMode.ADAPTIVE,
+        customBackgroundPath = prefs[Keys.CUSTOM_BG_PATH]?.takeIf { it.isNotBlank() },
+        customBackgroundLuminance = (prefs[Keys.CUSTOM_BG_LUMINANCE] ?: 0.04f).coerceIn(0f, 1f),
+        customBackgroundVersion = prefs[Keys.CUSTOM_BG_VERSION] ?: 0L,
+        backgroundDimmerAlpha = (prefs[Keys.BG_DIMMER_ALPHA] ?: 0.35f).coerceIn(0f, 0.85f),
+        primaryAccentArgb = prefs[Keys.PRIMARY_ACCENT_ARGB] ?: 0xFF7B61FFL,
         networkPreset = prefs[Keys.NETWORK_PRESET]?.let {
             runCatching { NetworkPreset.valueOf(it) }.getOrNull()
         } ?: NetworkPreset.BALANCED,
@@ -87,7 +108,9 @@ class SettingsDataStore(private val context: Context) {
         maxConcurrentSshChannels = (prefs[Keys.MAX_CONCURRENT_SSH_CHANNELS] ?: 24).coerceIn(8, 64),
         tcpNoDelay = prefs[Keys.TCP_NO_DELAY] ?: true,
         sshCompression = prefs[Keys.SSH_COMPRESSION] ?: false,
-        strictKillSwitch = prefs[Keys.STRICT_KILL_SWITCH] ?: false
+        strictKillSwitch = prefs[Keys.STRICT_KILL_SWITCH] ?: false,
+        tunQueueCapacity = (prefs[Keys.TUN_QUEUE_CAPACITY] ?: 64).coerceIn(32, 256),
+        smartDnsCacheEnabled = prefs[Keys.SMART_DNS_CACHE_ENABLED] ?: true
     )
 
     val settingsFlow: Flow<AppSettings> = context.aioSettingsDataStore.data.map { prefs ->
@@ -108,10 +131,13 @@ class SettingsDataStore(private val context: Context) {
             val updated = rawUpdated.copy(
                 connectionTimeoutSeconds = rawUpdated.connectionTimeoutSeconds.coerceIn(1, 999),
                 wifiProxySharePort = rawUpdated.wifiProxySharePort.coerceIn(1024, 65535),
+                customBackgroundLuminance = rawUpdated.customBackgroundLuminance.coerceIn(0f, 1f),
+                backgroundDimmerAlpha = rawUpdated.backgroundDimmerAlpha.coerceIn(0f, 0.85f),
                 transferBufferKb = rawUpdated.transferBufferKb.takeIf { it in ALLOWED_BUFFER_KB } ?: 16,
                 sshWindowKb = rawUpdated.sshWindowKb.takeIf { it in ALLOWED_SSH_WINDOW_KB } ?: 256,
                 sshKeepAliveSeconds = rawUpdated.sshKeepAliveSeconds.coerceIn(5, 60),
-                maxConcurrentSshChannels = rawUpdated.maxConcurrentSshChannels.coerceIn(8, 64)
+                maxConcurrentSshChannels = rawUpdated.maxConcurrentSshChannels.coerceIn(8, 64),
+                tunQueueCapacity = rawUpdated.tunQueueCapacity.coerceIn(32, 256)
             )
             prefs[Keys.AUTO_RECONNECT] = updated.autoReconnectOnNetworkChange
             prefs[Keys.KEEP_TRYING_TO_CONNECT] = updated.keepTryingToConnect
@@ -131,6 +157,16 @@ class SettingsDataStore(private val context: Context) {
             prefs[Keys.STRICT_TLS] = updated.strictTlsVerification
             prefs[Keys.VERBOSE_LOGS] = updated.verboseDebugLogs
             prefs[Keys.WAKE_LOCK_ENABLED] = updated.wakeLockEnabled
+            prefs[Keys.FONT_COLOR_MODE] = updated.fontColorMode.name
+            if (updated.customBackgroundPath.isNullOrBlank()) {
+                prefs.remove(Keys.CUSTOM_BG_PATH)
+            } else {
+                prefs[Keys.CUSTOM_BG_PATH] = updated.customBackgroundPath
+            }
+            prefs[Keys.CUSTOM_BG_LUMINANCE] = updated.customBackgroundLuminance
+            prefs[Keys.CUSTOM_BG_VERSION] = updated.customBackgroundVersion
+            prefs[Keys.BG_DIMMER_ALPHA] = updated.backgroundDimmerAlpha
+            prefs[Keys.PRIMARY_ACCENT_ARGB] = updated.primaryAccentArgb
             prefs[Keys.NETWORK_PRESET] = updated.networkPreset.name
             prefs[Keys.TRANSFER_BUFFER_KB] = updated.transferBufferKb
             prefs[Keys.IMMEDIATE_FLUSH] = updated.immediateFlush
@@ -140,6 +176,8 @@ class SettingsDataStore(private val context: Context) {
             prefs[Keys.TCP_NO_DELAY] = updated.tcpNoDelay
             prefs[Keys.SSH_COMPRESSION] = updated.sshCompression
             prefs[Keys.STRICT_KILL_SWITCH] = updated.strictKillSwitch
+            prefs[Keys.TUN_QUEUE_CAPACITY] = updated.tunQueueCapacity
+            prefs[Keys.SMART_DNS_CACHE_ENABLED] = updated.smartDnsCacheEnabled
         }
     }
 

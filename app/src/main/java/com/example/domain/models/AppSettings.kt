@@ -5,10 +5,16 @@ enum class AppLanguage(val code: String, val label: String) {
     ENGLISH("en", "English (preparado i18n)")
 }
 
+enum class FontColorMode(val label: String) {
+    ADAPTIVE("Adaptable"),
+    FORCED_WHITE("Blanco"),
+    FORCED_BLACK("Negro")
+}
+
 enum class NetworkPreset(val label: String, val subtitle: String) {
-    BALANCED("Equilibrado (Recomendado)", "16 KB buf · 256 KB SSH · 24 canales · Flush inmediato"),
-    MAX_STABILITY("Máxima Estabilidad", "8 KB buf · 128 KB SSH · 16 canales · Keep-Alive 10s"),
-    MAX_SPEED("Máxima Velocidad", "32 KB buf · 512 KB SSH · 32 canales · Keep-Alive 20s"),
+    BALANCED("Equilibrado (Recomendado)", "16 KB buf · 256 KB SSH · 24 canales · Cola 64 · SWR"),
+    MAX_STABILITY("Máxima Estabilidad", "8 KB buf · 128 KB SSH · 16 canales · Cola 48 · Keep-Alive 10s"),
+    MAX_SPEED("Máxima Velocidad", "32 KB buf · 512 KB SSH · 32 canales · Cola 192 · Keep-Alive 20s"),
     MAX_SECURITY_PRIVACY("Máxima Seguridad y Privacidad", "DoH + TLS estricto + Kill-Switch (sin Bypass LAN ni Wi-Fi Proxy)"),
     CUSTOM("Personalizado", "Ajuste manual de parámetros del motor")
 }
@@ -20,7 +26,9 @@ data class EngineTuningConfig(
     val sshKeepAliveSeconds: Int = 15,
     val maxConcurrentSshChannels: Int = 24,
     val tcpNoDelay: Boolean = true,
-    val sshCompression: Boolean = false
+    val sshCompression: Boolean = false,
+    val tunQueueCapacity: Int = 64,
+    val smartDnsCacheEnabled: Boolean = true
 ) {
     val transferBufferBytes: Int
         get() = (transferBufferKb.coerceIn(4, 64)) * 1024
@@ -33,6 +41,9 @@ data class EngineTuningConfig(
 
     val clampedConcurrency: Int
         get() = maxConcurrentSshChannels.coerceIn(8, 64)
+
+    val clampedTunQueueCapacity: Int
+        get() = tunQueueCapacity.coerceIn(32, 256)
 }
 
 data class AppSettings(
@@ -55,7 +66,14 @@ data class AppSettings(
     val strictTlsVerification: Boolean = true,
     val verboseDebugLogs: Boolean = false,
     val wakeLockEnabled: Boolean = true,
-    // Advanced Engine & Performance Tuning (v2.0)
+    // UI Personalization
+    val fontColorMode: FontColorMode = FontColorMode.ADAPTIVE,
+    val customBackgroundPath: String? = null,
+    val customBackgroundLuminance: Float = 0.04f,
+    val customBackgroundVersion: Long = 0L,
+    val backgroundDimmerAlpha: Float = 0.35f,
+    val primaryAccentArgb: Long = 0xFF7B61FFL,
+    // Advanced Engine & Performance Tuning
     val networkPreset: NetworkPreset = NetworkPreset.BALANCED,
     val transferBufferKb: Int = 16,
     val immediateFlush: Boolean = true,
@@ -64,7 +82,9 @@ data class AppSettings(
     val maxConcurrentSshChannels: Int = 24,
     val tcpNoDelay: Boolean = true,
     val sshCompression: Boolean = false,
-    val strictKillSwitch: Boolean = false
+    val strictKillSwitch: Boolean = false,
+    val tunQueueCapacity: Int = 64,
+    val smartDnsCacheEnabled: Boolean = true
 ) {
     fun toEngineTuningConfig(): EngineTuningConfig = EngineTuningConfig(
         transferBufferKb = transferBufferKb,
@@ -73,7 +93,9 @@ data class AppSettings(
         sshKeepAliveSeconds = sshKeepAliveSeconds,
         maxConcurrentSshChannels = maxConcurrentSshChannels,
         tcpNoDelay = tcpNoDelay,
-        sshCompression = sshCompression
+        sshCompression = sshCompression,
+        tunQueueCapacity = tunQueueCapacity,
+        smartDnsCacheEnabled = smartDnsCacheEnabled
     )
 
     fun applyNetworkPreset(preset: NetworkPreset): AppSettings = when (preset) {
@@ -86,7 +108,9 @@ data class AppSettings(
             maxConcurrentSshChannels = 24,
             tcpNoDelay = true,
             sshCompression = false,
-            strictKillSwitch = false
+            strictKillSwitch = false,
+            tunQueueCapacity = 64,
+            smartDnsCacheEnabled = true
         )
         NetworkPreset.MAX_STABILITY -> copy(
             networkPreset = NetworkPreset.MAX_STABILITY,
@@ -96,7 +120,9 @@ data class AppSettings(
             sshKeepAliveSeconds = 10,
             maxConcurrentSshChannels = 16,
             tcpNoDelay = true,
-            sshCompression = false
+            sshCompression = false,
+            tunQueueCapacity = 48,
+            smartDnsCacheEnabled = true
         )
         NetworkPreset.MAX_SPEED -> copy(
             networkPreset = NetworkPreset.MAX_SPEED,
@@ -106,7 +132,9 @@ data class AppSettings(
             sshKeepAliveSeconds = 20,
             maxConcurrentSshChannels = 32,
             tcpNoDelay = true,
-            sshCompression = false
+            sshCompression = false,
+            tunQueueCapacity = 192,
+            smartDnsCacheEnabled = true
         )
         NetworkPreset.MAX_SECURITY_PRIVACY -> copy(
             networkPreset = NetworkPreset.MAX_SECURITY_PRIVACY,
@@ -121,7 +149,9 @@ data class AppSettings(
             sshKeepAliveSeconds = 15,
             maxConcurrentSshChannels = 24,
             tcpNoDelay = true,
-            sshCompression = false
+            sshCompression = false,
+            tunQueueCapacity = 64,
+            smartDnsCacheEnabled = true
         )
         NetworkPreset.CUSTOM -> copy(networkPreset = NetworkPreset.CUSTOM)
     }

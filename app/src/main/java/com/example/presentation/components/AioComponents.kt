@@ -37,7 +37,6 @@ import com.example.ui.theme.SpaceAmber
 import com.example.ui.theme.SpaceCoral
 import com.example.ui.theme.SpaceCyan
 import com.example.ui.theme.SpaceEmerald
-import com.example.ui.theme.SpaceViolet
 
 @Composable
 fun ProtocolBadge(protocol: TunnelProtocol, modifier: Modifier = Modifier) {
@@ -45,12 +44,13 @@ fun ProtocolBadge(protocol: TunnelProtocol, modifier: Modifier = Modifier) {
         !protocol.isBuiltInEngine -> SpaceAmber
         protocol == TunnelProtocol.SSH || protocol == TunnelProtocol.SSH_JUMP -> SpaceEmerald
         protocol == TunnelProtocol.SOCKS5 -> SpaceCyan
-        else -> SpaceViolet
+        else -> MaterialTheme.colorScheme.primary
     }
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(10.dp),
         color = accent.copy(alpha = 0.16f),
+        contentColor = accent,
         border = BorderStroke(1.dp, accent.copy(alpha = 0.45f))
     ) {
         Text(

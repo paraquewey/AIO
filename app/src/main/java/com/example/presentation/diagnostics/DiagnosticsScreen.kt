@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -86,7 +87,6 @@ import com.example.presentation.components.ServerMessageWebView
 import com.example.presentation.components.formatServerBannerAsHtml
 import com.example.ui.theme.SpaceAmber
 import com.example.ui.theme.SpaceCyan
-import com.example.ui.theme.SpaceViolet
 import com.example.ui.theme.TerminalBg
 import com.example.ui.theme.TerminalDivider
 import com.example.ui.theme.TerminalError
@@ -155,14 +155,19 @@ fun DiagnosticsScreen(
 
     val totalTerminalItems = logs.size + if (serverBannerHtml != null) 1 else 0
 
-    // Pause auto-scroll if user drags upward; resume automatically when scrolled back to bottom
+    // Pause auto-scroll only on user drag upward; resume automatically when scrolled back to bottom
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect { interaction ->
+            if (interaction is DragInteraction.Start && listState.canScrollForward && autoScrollEnabled) {
+                autoScrollEnabled = false
+            }
+        }
+    }
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
             .distinctUntilChanged()
             .collect { (inProgress, canScrollForward) ->
-                if (inProgress && canScrollForward && autoScrollEnabled) {
-                    autoScrollEnabled = false
-                } else if (!inProgress && !canScrollForward && !autoScrollEnabled) {
+                if (!inProgress && !canScrollForward && !autoScrollEnabled) {
                     autoScrollEnabled = true
                 }
             }
@@ -293,7 +298,7 @@ fun DiagnosticsScreen(
                             Icon(
                                 imageVector = Icons.Default.Menu,
                                 contentDescription = "Menú de pruebas, claves SSH y auto-scroll",
-                                tint = SpaceViolet
+                                tint = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
@@ -589,7 +594,10 @@ private fun ConsoleToolsBottomSheetContent(
                     }
                     Button(
                         onClick = onRunDiagnostics,
-                        colors = ButtonDefaults.buttonColors(containerColor = SpaceViolet),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                         modifier = Modifier.testTag("diagnostics_run_button")
                     ) {
@@ -631,7 +639,7 @@ private fun ConsoleToolsBottomSheetContent(
                             DiagnosticStatus.RUNNING -> CircularProgressIndicator(
                                 modifier = Modifier.size(18.dp),
                                 strokeWidth = 2.dp,
-                                color = SpaceViolet
+                                color = MaterialTheme.colorScheme.primary
                             )
                             DiagnosticStatus.PASSED -> Icon(
                                 Icons.Default.CheckCircle,

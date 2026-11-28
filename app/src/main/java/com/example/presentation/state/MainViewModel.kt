@@ -3,10 +3,13 @@ package com.example.presentation.state
 import android.app.Application
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.AioTunnelApplication
+import com.example.ui.theme.computeBitmapAverageLuminance
+import com.example.ui.theme.decodeSampledBackgroundBitmap
 import com.example.core.logger.AppLogger
 import com.example.data.import_export.ConfigParserAndExporter
 import com.example.data.security.SshHostKeyStore
@@ -46,6 +49,8 @@ import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.BufferedReader
+import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -1057,6 +1062,74 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun updateSettings(transform: (AppSettings) -> AppSettings) {
         viewModelScope.launch {
             settingsRepo.update(transform)
+        }
+    }
+
+    fun importCustomBackground(uri: Uri) {
+        viewModelScope.launch {
+            val imported = withContext(Dispatchers.IO) {
+                runCatching {
+                    val destFile = File(app.filesDir, "custom_bg.jpg")
+                    val tempFile = File(app.filesDir, "custom_bg.tmp")
+                    app.contentResolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(tempFile).use { output ->
+                            input.copyTo(output)
+                        }
+                    } ?: error("No se pudo abrir la imagen seleccionada.")
+
+                    if (!tempFile.exists() || tempFile.length() <= 0L) {
+                        tempFile.delete()
+                        error("La imagen seleccionada está vacía.")
+                    }
+
+                    val bitmap = decodeSampledBackgroundBitmap(tempFile.absolutePath, maxDimensionPx = 1080)
+                    if (bitmap == null) {
+                        tempFile.delete()
+                        error("Formato de imagen no compatible.")
+                    }
+                    val avgLum = try {
+                        computeBitmapAverageLuminance(bitmap)
+                    } finally {
+                        if (!bitmap.isRecycled) bitmap.recycle()
+                    }
+                    if (destFile.exists()) destFile.delete()
+                    if (!tempFile.renameTo(destFile)) {
+                        tempFile.copyTo(destFile, overwrite = true)
+                        tempFile.delete()
+                    }
+                    destFile.absolutePath to avgLum
+                }
+            }
+
+            imported.onSuccess { (path, luminance) ->
+                val version = System.currentTimeMillis()
+                settingsRepo.update {
+                    it.copy(
+                        customBackgroundPath = path,
+                        customBackgroundLuminance = luminance,
+                        customBackgroundVersion = version
+                    )
+                }
+                _userMessage.value = "Fondo personalizado aplicado correctamente."
+            }.onFailure { err ->
+                _userMessage.value = err.message ?: "No se pudo cargar la imagen de galería."
+            }
+        }
+    }
+
+    fun clearCustomBackground() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { File(app.filesDir, "custom_bg.jpg").delete() }
+            }
+            settingsRepo.update {
+                it.copy(
+                    customBackgroundPath = null,
+                    customBackgroundLuminance = 0.04f,
+                    customBackgroundVersion = 0L
+                )
+            }
+            _userMessage.value = "Fondo espacial restaurado."
         }
     }
 

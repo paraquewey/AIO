@@ -122,7 +122,8 @@ class AioVpnService : VpnService() {
         val engine = app.engineFactory.createForProtocol(profile.protocol)
         val dnsManager = DnsManager(
             protectSocket = { sock -> protect(sock) },
-            protectDatagramSocket = { ds -> protect(ds) }
+            protectDatagramSocket = { ds -> protect(ds) },
+            initialSmartCacheEnabled = appSettings.smartDnsCacheEnabled
         )
         val dnsConfig = DnsManager.resolveActiveDnsConfig(profile, appSettings)
 
@@ -186,7 +187,7 @@ class AioVpnService : VpnService() {
         connMgr.resetRetryCounter()
 
         startNetworkMonitor(profile.id)
-        startWifiProxyObserver(engine, statsMgr, connMgr, profile.bypassLan)
+        startWifiProxyObserver(engine, dnsManager, statsMgr, connMgr, profile.bypassLan)
         startEngineDropWatcher(engine, profile.id, profile.name, connMgr)
 
         val originalBanner = if (profile.serverMessageMode == ServerMessageMode.ORIGINAL) {
@@ -242,6 +243,7 @@ class AioVpnService : VpnService() {
 
     private fun startWifiProxyObserver(
         engine: TunnelEngine,
+        dnsManager: DnsManager,
         statsMgr: com.example.core.stats.StatisticsManager,
         connMgr: com.example.core.connection.ConnectionManager,
         profileBypassLan: Boolean
@@ -258,6 +260,7 @@ class AioVpnService : VpnService() {
                 if (!disconnectingFlag && activeEngine === engine) {
                     engine.updateTuning(tuning)
                     packetRouter?.updateTuning(tuning)
+                    dnsManager.updateTuning(tuning)
                     if (settings.wakeLockEnabled) {
                         acquireVpnWakeLock()
                     } else {
