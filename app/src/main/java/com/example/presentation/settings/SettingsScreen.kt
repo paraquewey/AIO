@@ -431,6 +431,13 @@ fun SettingsScreen(
                     }
                 }
                 Spacer(Modifier.height(6.dp))
+                SettingSwitchRow(
+                    title = "WakeLock (Evitar suspensión de CPU)",
+                    subtitle = "Mantiene estable el túnel VPN y el Proxy Wi-Fi con la pantalla apagada",
+                    checked = settings.wakeLockEnabled,
+                    testTag = "settings_wakelock_switch"
+                ) { v -> onUpdateSettings { it.copy(wakeLockEnabled = v) } }
+                Spacer(Modifier.height(6.dp))
                 Text(
                     text = "Evita que Android suspenda el servicio VPN y el Proxy Wi-Fi cuando la pantalla está apagada.",
                     style = MaterialTheme.typography.bodySmall,

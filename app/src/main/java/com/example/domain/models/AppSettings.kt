@@ -23,5 +23,6 @@ data class AppSettings(
     val useLightTheme: Boolean = false,
     val language: AppLanguage = AppLanguage.SPANISH,
     val strictTlsVerification: Boolean = true,
-    val verboseDebugLogs: Boolean = false
+    val verboseDebugLogs: Boolean = false,
+    val wakeLockEnabled: Boolean = true
 )

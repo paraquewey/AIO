@@ -1,6 +1,7 @@
 package com.example
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -51,17 +52,36 @@ class AioRobolectricUiTest {
 
         composeRule.onNodeWithTag("nav_diagnostics").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("diagnostics_run_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("console_title").assertIsDisplayed()
+        composeRule.onNodeWithTag("console_copy_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("console_clear_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("console_menu_button").assertIsDisplayed()
 
         composeRule.onNodeWithTag("nav_settings").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("settings_keep_trying_switch").assertIsDisplayed()
         composeRule.onNodeWithTag("settings_auto_reconnect_switch").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_wakelock_switch").performScrollTo().assertIsDisplayed().assertIsOn()
         composeRule.onNodeWithTag("settings_timeout_input").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("settings_wifi_proxy_switch").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("settings_battery_optimization_button").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("settings_dns1_input").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("settings_dns2_input").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun `console sandwich menu opens bottom sheet with diagnostics, ssh keys and autoscroll`() {
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("nav_diagnostics").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("console_menu_button").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("console_autoscroll_switch").assertIsDisplayed().assertIsOn()
+        composeRule.onNodeWithTag("diagnostics_run_button").assertIsDisplayed()
+        composeRule.onAllNodesWithText("Claves SSH confiables", substring = true).fetchSemanticsNodes()
+            .let { org.junit.Assert.assertTrue(it.isNotEmpty()) }
     }
 
     @Test

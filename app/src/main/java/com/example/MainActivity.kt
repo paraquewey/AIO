@@ -22,13 +22,13 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.MonitorHeart
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -171,7 +171,7 @@ fun AioTunnelAppRoot(viewModel: MainViewModel = viewModel()) {
             TopLevelDestination(AioRoute.Home, "Inicio", Icons.Filled.Home, Icons.Outlined.Home, "nav_home"),
             TopLevelDestination(AioRoute.Servers, "Servidores", Icons.Filled.Dns, Icons.Outlined.Dns, "nav_servers"),
             TopLevelDestination(AioRoute.Configs, "Perfiles", Icons.Filled.Tune, Icons.Outlined.Tune, "nav_configs"),
-            TopLevelDestination(AioRoute.Diagnostics, "Diagnóstico", Icons.Filled.MonitorHeart, Icons.Outlined.MonitorHeart, "nav_diagnostics"),
+            TopLevelDestination(AioRoute.Diagnostics, "Consola", Icons.Filled.Terminal, Icons.Outlined.Terminal, "nav_diagnostics"),
             TopLevelDestination(AioRoute.Settings, "Ajustes", Icons.Filled.Settings, Icons.Outlined.Settings, "nav_settings")
         )
     }

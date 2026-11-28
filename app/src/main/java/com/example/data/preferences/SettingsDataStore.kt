@@ -38,6 +38,7 @@ class SettingsDataStore(private val context: Context) {
         val LANGUAGE = stringPreferencesKey("language")
         val STRICT_TLS = booleanPreferencesKey("strict_tls")
         val VERBOSE_LOGS = booleanPreferencesKey("verbose_logs")
+        val WAKE_LOCK_ENABLED = booleanPreferencesKey("wake_lock_enabled")
     }
 
     private fun decodeSettings(prefs: Preferences): AppSettings = AppSettings(
@@ -62,7 +63,8 @@ class SettingsDataStore(private val context: Context) {
             runCatching { AppLanguage.valueOf(it) }.getOrNull()
         } ?: AppLanguage.SPANISH,
         strictTlsVerification = prefs[Keys.STRICT_TLS] ?: true,
-        verboseDebugLogs = prefs[Keys.VERBOSE_LOGS] ?: false
+        verboseDebugLogs = prefs[Keys.VERBOSE_LOGS] ?: false,
+        wakeLockEnabled = prefs[Keys.WAKE_LOCK_ENABLED] ?: true
     )
 
     val settingsFlow: Flow<AppSettings> = context.aioSettingsDataStore.data.map { prefs ->
@@ -101,6 +103,7 @@ class SettingsDataStore(private val context: Context) {
             prefs[Keys.LANGUAGE] = updated.language.name
             prefs[Keys.STRICT_TLS] = updated.strictTlsVerification
             prefs[Keys.VERBOSE_LOGS] = updated.verboseDebugLogs
+            prefs[Keys.WAKE_LOCK_ENABLED] = updated.wakeLockEnabled
         }
     }
 }

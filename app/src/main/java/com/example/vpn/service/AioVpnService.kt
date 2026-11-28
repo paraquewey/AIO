@@ -11,6 +11,7 @@ import android.net.IpPrefix
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.example.AioTunnelApplication
 import com.example.MainActivity
@@ -54,6 +55,8 @@ class AioVpnService : VpnService() {
     private var activeProfileId: String? = null
     private var reconnectAttempt = 0
     private var disconnectingFlag = false
+    private val wakeLockMutex = Any()
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -205,6 +208,9 @@ class AioVpnService : VpnService() {
             TAG,
             "Túnel activo (DNS1=${dnsConfig.primaryDns}, DNS2=${dnsConfig.secondaryDns}, modo=${dnsConfig.dnsMode.name}, timeout=${appSettings.connectionTimeoutSeconds}s)"
         )
+        if (appSettings.wakeLockEnabled) {
+            acquireVpnWakeLock()
+        }
         updateNotification("Conectado · ${profile.name} (${profile.protocol.badgeCode})")
         startNotificationTicker(profile.name)
 
@@ -243,6 +249,13 @@ class AioVpnService : VpnService() {
         wifiShareObserverJob = serviceScope.launch(Dispatchers.IO) {
             var currentPort: Int? = null
             app.settingsRepository.settings.collect { settings ->
+                if (!disconnectingFlag && activeEngine === engine) {
+                    if (settings.wakeLockEnabled) {
+                        acquireVpnWakeLock()
+                    } else {
+                        releaseVpnWakeLock()
+                    }
+                }
                 bypassFlag.set(settings.bypassLan && profileBypassLan)
                 val desiredPort = if (settings.wifiProxyShareEnabled) {
                     settings.wifiProxySharePort.coerceIn(1024, 65535)
@@ -498,6 +511,7 @@ class AioVpnService : VpnService() {
             activeEngine?.release()
         }
         activeEngine = null
+        releaseVpnWakeLock()
         app.connectionManager.clearActiveTunnel()
         app.statisticsManager.stopSession()
         if (userRequested) {
@@ -525,9 +539,37 @@ class AioVpnService : VpnService() {
         packetRouter?.stop()
         runCatching { tunInterface?.close() }
         runCatching { activeEngine?.release() }
+        releaseVpnWakeLock()
         (application as? AioTunnelApplication)?.connectionManager?.clearActiveTunnel()
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    private fun acquireVpnWakeLock() {
+        synchronized(wakeLockMutex) {
+            val existing = wakeLock
+            if (existing != null && existing.isHeld) return
+            val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+            val wl = existing ?: pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
+                setReferenceCounted(false)
+            }.also { wakeLock = it }
+            if (!wl.isHeld) {
+                @Suppress("WakelockTimeout")
+                wl.acquire()
+                AppLogger.info(TAG, "WakeLock acquire (CPU activa en segundo plano)")
+            }
+        }
+    }
+
+    private fun releaseVpnWakeLock() {
+        synchronized(wakeLockMutex) {
+            val wl = wakeLock ?: return
+            if (wl.isHeld) {
+                runCatching { wl.release() }
+                AppLogger.info(TAG, "WakeLock release")
+            }
+            wakeLock = null
+        }
     }
 
     private fun stopForegroundAndSelf() {
@@ -623,6 +665,7 @@ class AioVpnService : VpnService() {
 
     companion object {
         private const val TAG = "AioVpnService"
+        private const val WAKE_LOCK_TAG = "AioTunnelVpn::VpnWakeLock"
         private const val DEFAULT_TUN_IPV4 = "10.89.0.2"
         private const val DEFAULT_TUN_PREFIX = 30
         const val CHANNEL_ID = "aio_vpn_status_channel"

@@ -30,3 +30,13 @@ val GruvboxPurple = Color(0xFFD3869B)
 val GlassSurface = Color(0xD1171513)
 val GlassSurfaceElevated = Color(0xDE221F1C)
 val GlassBorder = Color(0x55A89984)
+
+// Full-screen HTTP Custom style Terminal / Console palette
+val TerminalBg = Color(0xFF0A0A0A)
+val TerminalTopBarBg = Color(0xFF111111)
+val TerminalDivider = Color(0xFF1E1E1E)
+val TerminalTimestamp = Color(0xFF8E8E93)
+val TerminalTextInfo = Color(0xFFE5E5EA)
+val TerminalSuccess = Color(0xFF32D74B)
+val TerminalWarn = Color(0xFFFFD60A)
+val TerminalError = Color(0xFFFF453A)
