@@ -4,6 +4,7 @@ import com.example.core.logger.AppLogger
 import com.example.data.security.HostKeyVerificationResult
 import com.example.data.security.SshHostKeyStore
 import com.example.domain.models.EngineFamily
+import com.example.domain.models.EngineTuningConfig
 import com.example.domain.models.ProfileSecrets
 import com.example.domain.models.ServerMessageMode
 import com.example.domain.models.SshAuthMethod
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import java.io.BufferedInputStream
 import java.io.IOException
@@ -40,6 +42,90 @@ import java.net.Socket
 import java.nio.charset.StandardCharsets
 import java.util.IdentityHashMap
 import java.util.Properties
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+
+/**
+ * Thread-safe, dynamically resizable concurrency limiter for simultaneous SSH direct-tcpip channels.
+ * Prevents Chrome/WebView fast-browsing connection storms from saturating Dropbear/OpenSSH.
+ */
+internal class DynamicChannelLimiter(initialLimit: Int = 24) {
+    private val lock = ReentrantLock()
+    private val slotAvailable = lock.newCondition()
+    private var maxPermits: Int = initialLimit.coerceIn(8, 64)
+    private var activeCount: Int = 0
+
+    fun setLimit(newLimit: Int) {
+        lock.lock()
+        try {
+            maxPermits = newLimit.coerceIn(8, 64)
+            slotAvailable.signalAll()
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun getLimit(): Int {
+        lock.lock()
+        return try {
+            maxPermits
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun getActiveCount(): Int {
+        lock.lock()
+        return try {
+            activeCount
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun acquire(timeoutMs: Long) {
+        val deadlineNs = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs.coerceAtLeast(1_000L))
+        lock.lock()
+        try {
+            while (activeCount >= maxPermits) {
+                val remainingNs = deadlineNs - System.nanoTime()
+                if (remainingNs <= 0L) {
+                    throw IOException("Cola de canales SSH saturada ($activeCount/$maxPermits activos)")
+                }
+                slotAvailable.awaitNanos(remainingNs)
+            }
+            activeCount++
+        } catch (ie: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw IOException("Espera de canal SSH interrumpida", ie)
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun release() {
+        lock.lock()
+        try {
+            if (activeCount > 0) {
+                activeCount--
+            }
+            slotAvailable.signalAll()
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun reset() {
+        lock.lock()
+        try {
+            activeCount = 0
+            slotAvailable.signalAll()
+        } finally {
+            lock.unlock()
+        }
+    }
+}
 
 class SshTunnelEngine(
     private val hostKeyStore: SshHostKeyStore
@@ -56,6 +142,11 @@ class SshTunnelEngine(
     private var primarySession: Session? = null
     private var localSocksServer: LocalSocks5Server? = null
     private var forwardedLocalPort: Int = -1
+
+    @Volatile
+    private var tuningConfig: EngineTuningConfig = EngineTuningConfig()
+
+    private val channelLimiter = DynamicChannelLimiter(tuningConfig.clampedConcurrency)
 
     @Volatile
     private var lastServerBanner: String? = null
@@ -89,7 +180,16 @@ class SshTunnelEngine(
 
     override suspend fun initialize(context: EngineContext) {
         this.context = context
+        updateTuning(context.tuningConfig)
         _status.value = EngineStatus.INITIALIZED
+    }
+
+    override fun updateTuning(config: EngineTuningConfig) {
+        tuningConfig = config
+        channelLimiter.setLimit(config.clampedConcurrency)
+        runCatching { primarySession?.serverAliveInterval = config.sshKeepAliveMs }
+        runCatching { jumpSession?.serverAliveInterval = config.sshKeepAliveMs }
+        localSocksServer?.updateTuning(config)
     }
 
     override suspend fun start(profile: TunnelProfile, secrets: ProfileSecrets): Result<Unit> =
@@ -99,10 +199,12 @@ class SshTunnelEngine(
 
             val ctx = context ?: return@withContext Result.failure(IllegalStateException("EngineContext ausente."))
             val timeoutMs = ctx.connectionTimeoutMs.coerceIn(1_000, 999_000)
+            val tuning = tuningConfig
             _status.value = EngineStatus.STARTING
 
             return@withContext runCatching {
                 stopInternal()
+                channelLimiter.setLimit(tuning.clampedConcurrency)
                 val jsch = JSch()
                 jsch.hostKeyRepository = createVerifiedHostKeyRepository(ctx)
 
@@ -119,14 +221,23 @@ class SshTunnelEngine(
                         )
                     }
                     val jSession = jumpJsch.getSession(profile.jumpUsername, profile.jumpHost, profile.jumpPort)
-                    jSession.setSocketFactory(ProtectedSocketFactory(ctx.protectSocket, profile, secrets, applyPayload = false, timeoutMs = timeoutMs))
+                    jSession.setSocketFactory(
+                        ProtectedSocketFactory(
+                            protectSocket = ctx.protectSocket,
+                            profile = profile,
+                            secrets = secrets,
+                            applyPayload = false,
+                            timeoutMs = timeoutMs,
+                            tcpNoDelayProvider = { tuningConfig.tcpNoDelay }
+                        )
+                    )
                     if (profile.jumpAuthMethod == SshAuthMethod.PASSWORD) {
                         jSession.setPassword(secrets.jumpPassword.toByteArray(StandardCharsets.UTF_8))
                     }
-                    configureSession(jSession, profile.serverMessageMode, profile.jumpHost, profile.jumpPort)
+                    configureSession(jSession, profile.serverMessageMode, profile.jumpHost, profile.jumpPort, tuning)
                     AppLogger.info(TAG, "Conectando Jump Host SSH ${profile.jumpHost}:${profile.jumpPort} (timeout=${timeoutMs} ms)...")
                     jSession.connect(timeoutMs)
-                    jSession.serverAliveInterval = SSH_SERVER_ALIVE_INTERVAL_MS
+                    jSession.serverAliveInterval = tuningConfig.sshKeepAliveMs
                     jSession.serverAliveCountMax = SSH_SERVER_ALIVE_COUNT_MAX
                     jumpSession = jSession
                     forwardedLocalPort = jSession.setPortForwardingL("127.0.0.1", 0, profile.host, profile.port)
@@ -152,33 +263,38 @@ class SshTunnelEngine(
                             profile = profile,
                             secrets = secrets,
                             applyPayload = profile.rawHttpPayload.isNotEmpty() || profile.tlsEnabled,
-                            timeoutMs = timeoutMs
+                            timeoutMs = timeoutMs,
+                            tcpNoDelayProvider = { tuningConfig.tcpNoDelay }
                         )
                     )
                 } else {
-                    session.setSocketFactory(TcpNoDelaySocketFactory(timeoutMs))
+                    session.setSocketFactory(TcpNoDelaySocketFactory(timeoutMs) { tuningConfig.tcpNoDelay })
                 }
                 if (profile.authMethod == SshAuthMethod.PASSWORD) {
                     session.setPassword(secrets.password.toByteArray(StandardCharsets.UTF_8))
                 }
                 session.hostKeyAlias = "${profile.host}:${profile.port}"
-                configureSession(session, profile.serverMessageMode, profile.host, profile.port)
+                configureSession(session, profile.serverMessageMode, profile.host, profile.port, tuning)
 
                 AppLogger.info(TAG, "Autenticando sesión SSH contra ${profile.host}:${profile.port} (timeout=${timeoutMs} ms)...")
                 session.connect(timeoutMs)
-                session.serverAliveInterval = SSH_SERVER_ALIVE_INTERVAL_MS
+                session.serverAliveInterval = tuningConfig.sshKeepAliveMs
                 session.serverAliveCountMax = SSH_SERVER_ALIVE_COUNT_MAX
                 primarySession = session
                 activeProfile = profile
 
-                val socksServer = LocalSocks5Server { dstHost, dstPort ->
-                    openTcpTunnel(dstHost, dstPort)
-                }
+                val socksServer = LocalSocks5Server(
+                    openTunnel = { dstHost, dstPort -> openTcpTunnel(dstHost, dstPort) },
+                    initialTuning = tuningConfig
+                )
                 val socksPort = socksServer.start()
                 localSocksServer = socksServer
 
                 _status.value = EngineStatus.RUNNING
-                AppLogger.info(TAG, "Sesión SSH establecida correctamente.")
+                AppLogger.info(
+                    TAG,
+                    "Sesión SSH establecida (win=${tuningConfig.sshWindowKb}KB, buf=${tuningConfig.transferBufferKb}KB, concurrencia=${tuningConfig.clampedConcurrency}, keepAlive=${tuningConfig.sshKeepAliveSeconds}s)."
+                )
                 AppLogger.info(TAG, "SSH Port Forwarding (direct-tcpip / SOCKS5 127.0.0.1:$socksPort) listo")
             }.onFailure { err ->
                 stopInternal()
@@ -210,6 +326,7 @@ class SshTunnelEngine(
         forwardedLocalPort = -1
         runCatching { jumpSession?.disconnect() }
         jumpSession = null
+        channelLimiter.reset()
     }
 
     override suspend fun openTcpTunnel(targetHost: String, targetPort: Int): TunnelStream =
@@ -217,26 +334,52 @@ class SshTunnelEngine(
             val session = primarySession ?: throw IOException("Sesión SSH no conectada.")
             if (!session.isConnected) throw IOException("Sesión SSH desconectada.")
 
-            val channel = session.openChannel("direct-tcpip") as ChannelDirectTCPIP
-            channel.setHost(targetHost)
-            channel.setPort(targetPort)
-            channel.setOrgIPAddress("127.0.0.1")
-            channel.setOrgPort(0)
-            configureChannelWindow(channel, SSH_LOCAL_WINDOW_BYTES)
-            val input = channel.inputStream
-            val output = channel.outputStream
             val timeoutMs = (context?.connectionTimeoutMs ?: CONNECT_TIMEOUT_MS).coerceIn(1_000, 999_000)
-            channel.connect(timeoutMs)
+            val tuning = tuningConfig
 
-            object : TunnelStream {
-                override val inputStream: InputStream = input
-                override val outputStream: OutputStream = output
-                override fun halfCloseOutput() {
-                    runCatching { output.close() }
+            // Concurrency pool prevents Chrome fast-browsing channel floods from stalling SSH daemon
+            runInterruptible(Dispatchers.IO) {
+                channelLimiter.acquire(timeoutMs.toLong())
+            }
+
+            val released = AtomicBoolean(false)
+            fun releasePermitOnce() {
+                if (released.compareAndSet(false, true)) {
+                    channelLimiter.release()
                 }
-                override fun close() {
-                    runCatching { channel.disconnect() }
+            }
+
+            var channel: ChannelDirectTCPIP? = null
+            try {
+                val activeSession = primarySession ?: throw IOException("Sesión SSH cerrada.")
+                if (!activeSession.isConnected) throw IOException("Sesión SSH desconectada.")
+
+                val ch = activeSession.openChannel("direct-tcpip") as ChannelDirectTCPIP
+                channel = ch
+                ch.setHost(targetHost)
+                ch.setPort(targetPort)
+                ch.setOrgIPAddress("127.0.0.1")
+                ch.setOrgPort(0)
+                configureChannelWindow(ch, tuning.sshWindowBytes)
+                val input = ch.inputStream
+                val output = ch.outputStream
+                ch.connect(timeoutMs)
+
+                object : TunnelStream {
+                    override val inputStream: InputStream = input
+                    override val outputStream: OutputStream = output
+                    override fun halfCloseOutput() {
+                        runCatching { output.close() }
+                    }
+                    override fun close() {
+                        runCatching { ch.disconnect() }
+                        releasePermitOnce()
+                    }
                 }
+            } catch (t: Throwable) {
+                runCatching { channel?.disconnect() }
+                releasePermitOnce()
+                throw t
             }
         }
 
@@ -266,16 +409,21 @@ class SshTunnelEngine(
 
     override fun getServerBanner(): String? = lastServerBanner
 
+    internal fun activeChannelCount(): Int = channelLimiter.getActiveCount()
+
+    internal fun currentConcurrencyLimit(): Int = channelLimiter.getLimit()
+
     private fun configureChannelWindow(channel: Channel, windowBytes: Int) {
+        val clampedWindow = windowBytes.coerceIn(65_536, 1_048_576)
         runCatching {
             val setLwSize = Channel::class.java.getDeclaredMethod("setLocalWindowSize", Int::class.javaPrimitiveType)
             setLwSize.isAccessible = true
-            setLwSize.invoke(channel, windowBytes)
+            setLwSize.invoke(channel, clampedWindow)
         }
         runCatching {
             val lwMaxField = Channel::class.java.getDeclaredField("lwsize_max")
             lwMaxField.isAccessible = true
-            lwMaxField.setInt(channel, windowBytes)
+            lwMaxField.setInt(channel, clampedWindow)
         }
         runCatching {
             val setPktSize = Channel::class.java.getDeclaredMethod("setLocalPacketSize", Int::class.javaPrimitiveType)
@@ -288,15 +436,17 @@ class SshTunnelEngine(
         session: Session,
         messageMode: ServerMessageMode,
         realHost: String,
-        realPort: Int
+        realPort: Int,
+        tuning: EngineTuningConfig
     ) {
         val config = Properties()
         config["StrictHostKeyChecking"] = "yes"
         config["PreferredAuthentications"] = "publickey,password,keyboard-interactive"
-        config["compression.s2c"] = "none"
-        config["compression.c2s"] = "none"
+        val compValue = if (tuning.sshCompression) "zlib@openssh.com,zlib,none" else "none"
+        config["compression.s2c"] = compValue
+        config["compression.c2s"] = compValue
         session.setConfig(config)
-        session.serverAliveInterval = SSH_SERVER_ALIVE_INTERVAL_MS
+        session.serverAliveInterval = tuning.sshKeepAliveMs
         session.serverAliveCountMax = SSH_SERVER_ALIVE_COUNT_MAX
         session.userInfo = object : UserInfo {
             override fun getPassphrase(): String? = null
@@ -395,15 +545,18 @@ class SshTunnelEngine(
         private val profile: TunnelProfile,
         private val secrets: ProfileSecrets,
         private val applyPayload: Boolean,
-        private val timeoutMs: Int
+        private val timeoutMs: Int,
+        private val tcpNoDelayProvider: () -> Boolean
     ) : SocketFactory {
         private val bufferedInputs = IdentityHashMap<Socket, InputStream>()
 
         override fun createSocket(host: String?, port: Int): Socket {
             val targetHost = host ?: profile.host
+            val useNoDelay = tcpNoDelayProvider()
             if (!applyPayload) {
                 val socket = Socket()
-                socket.tcpNoDelay = true
+                runCatching { socket.reuseAddress = true }
+                socket.tcpNoDelay = useNoDelay
                 socket.keepAlive = true
                 runCatching { socket.receiveBufferSize = SOCKET_BUFFER_BYTES }
                 runCatching { socket.sendBufferSize = SOCKET_BUFFER_BYTES }
@@ -425,6 +578,7 @@ class SshTunnelEngine(
                 readTimeoutMs = timeoutMs,
                 protectSocket = protectSocket
             )
+            runCatching { socket.tcpNoDelay = useNoDelay }
             try {
                 if (profile.rawHttpPayload.isNotEmpty()) {
                     val bufferedIn = BufferedInputStream(socket.getInputStream(), HANDSHAKE_BUFFER_BYTES)
@@ -457,11 +611,13 @@ class SshTunnelEngine(
     }
 
     private class TcpNoDelaySocketFactory(
-        private val timeoutMs: Int
+        private val timeoutMs: Int,
+        private val tcpNoDelayProvider: () -> Boolean
     ) : SocketFactory {
         override fun createSocket(host: String?, port: Int): Socket {
             val socket = Socket()
-            socket.tcpNoDelay = true
+            runCatching { socket.reuseAddress = true }
+            socket.tcpNoDelay = tcpNoDelayProvider()
             socket.keepAlive = true
             runCatching { socket.receiveBufferSize = SOCKET_BUFFER_BYTES }
             runCatching { socket.sendBufferSize = SOCKET_BUFFER_BYTES }

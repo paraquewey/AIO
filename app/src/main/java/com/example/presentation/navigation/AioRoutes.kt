@@ -14,6 +14,9 @@ sealed interface AioRoute {
     data object Configs : AioRoute
 
     @Serializable
+    data object Analysis : AioRoute
+
+    @Serializable
     data object Diagnostics : AioRoute
 
     @Serializable

@@ -2,6 +2,7 @@ package com.example.engines.adapter
 
 import com.example.core.stats.StatisticsManager
 import com.example.domain.models.EngineFamily
+import com.example.domain.models.EngineTuningConfig
 import com.example.domain.models.ProfileSecrets
 import com.example.domain.models.SshHostKeyChallenge
 import com.example.domain.models.TunnelProfile
@@ -85,7 +86,8 @@ data class EngineContext(
     val protectDatagramSocket: (DatagramSocket) -> Boolean,
     val statisticsManager: StatisticsManager,
     val onSshHostKeyChallenge: suspend (SshHostKeyChallenge) -> Boolean,
-    val connectionTimeoutMs: Int = 10_000
+    val connectionTimeoutMs: Int = 10_000,
+    val tuningConfig: EngineTuningConfig = EngineTuningConfig()
 )
 
 interface TunnelEngine {
@@ -99,6 +101,7 @@ interface TunnelEngine {
     suspend fun stop()
     suspend fun openTcpTunnel(targetHost: String, targetPort: Int): TunnelStream
     suspend fun openUdpRelay(): UdpRelaySession? = null
+    fun updateTuning(config: EngineTuningConfig) {}
     fun getLocalSocksPort(): Int? = null
     fun getServerBanner(): String? = null
     fun getStatistics(): TunnelStatistics

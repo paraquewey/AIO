@@ -6,6 +6,7 @@ import android.os.PowerManager
 import com.example.core.logger.AppLogger
 import com.example.core.network.VpnRouteHelper
 import com.example.core.stats.StatisticsManager
+import com.example.domain.models.EngineTuningConfig
 import com.example.engines.adapter.TunnelStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,7 +44,8 @@ class WifiShareProxyServer(
     private val context: Context? = null,
     private val protectSocket: (Socket) -> Boolean = { true },
     private val isBypassLanEnabled: () -> Boolean = { true },
-    private val connectTimeoutMs: Int = 10_000
+    private val connectTimeoutMs: Int = 10_000,
+    private val getTuningConfig: () -> EngineTuningConfig = { EngineTuningConfig() }
 ) : Closeable {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -143,7 +145,9 @@ class WifiShareProxyServer(
     }
 
     private fun tuneSocket(socket: Socket) {
-        runCatching { socket.tcpNoDelay = true }
+        val tuning = getTuningConfig()
+        runCatching { socket.reuseAddress = true }
+        runCatching { socket.tcpNoDelay = tuning.tcpNoDelay }
         runCatching { socket.keepAlive = true }
         runCatching { socket.receiveBufferSize = SOCKET_BUFFER_BYTES }
         runCatching { socket.sendBufferSize = SOCKET_BUFFER_BYTES }
@@ -326,13 +330,19 @@ class WifiShareProxyServer(
         tunnel: TunnelStream
     ) {
         val upstreamJob = scope.launch {
-            val buf = ByteArray(COPY_BUFFER_BYTES)
+            var buf = ByteArray(getTuningConfig().transferBufferBytes)
             try {
                 while (isActive && running.get()) {
+                    val tuning = getTuningConfig()
+                    if (buf.size != tuning.transferBufferBytes) {
+                        buf = ByteArray(tuning.transferBufferBytes)
+                    }
                     val n = clientIn.read(buf)
                     if (n <= 0) break
                     tunnel.outputStream.write(buf, 0, n)
-                    tunnel.outputStream.flush()
+                    if (tuning.immediateFlush || clientIn.available() == 0) {
+                        tunnel.outputStream.flush()
+                    }
                     statisticsManager?.recordBytesSent(n.toLong())
                     statisticsManager?.recordPacketForwarded()
                 }
@@ -343,13 +353,19 @@ class WifiShareProxyServer(
         }
 
         val downstreamJob = scope.launch {
-            val buf = ByteArray(COPY_BUFFER_BYTES)
+            var buf = ByteArray(getTuningConfig().transferBufferBytes)
             try {
                 while (isActive && running.get()) {
+                    val tuning = getTuningConfig()
+                    if (buf.size != tuning.transferBufferBytes) {
+                        buf = ByteArray(tuning.transferBufferBytes)
+                    }
                     val n = tunnel.inputStream.read(buf)
                     if (n <= 0) break
                     clientOut.write(buf, 0, n)
-                    clientOut.flush()
+                    if (tuning.immediateFlush || tunnel.inputStream.available() == 0) {
+                        clientOut.flush()
+                    }
                     statisticsManager?.recordBytesReceived(n.toLong())
                     statisticsManager?.recordPacketForwarded()
                 }

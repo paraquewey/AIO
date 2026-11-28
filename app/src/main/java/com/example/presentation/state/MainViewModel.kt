@@ -14,14 +14,21 @@ import com.example.domain.models.AppSettings
 import com.example.domain.models.ConnectionState
 import com.example.domain.models.DiagnosticCheckResult
 import com.example.domain.models.DiagnosticStatus
+import com.example.domain.models.DnsLeakReport
+import com.example.domain.models.LatencyStabilityState
 import com.example.domain.models.LogEntry
+import com.example.domain.models.PortProbeEntry
+import com.example.domain.models.PortScannerState
 import com.example.domain.models.ProfileSecrets
+import com.example.domain.models.SpeedSample
+import com.example.domain.models.SpeedTestState
 import com.example.domain.models.SshHostKeyChallenge
 import com.example.domain.models.TunnelProfile
 import com.example.domain.models.TunnelProtocol
 import com.example.domain.models.TunnelStatistics
 import com.example.engines.http.HttpConnectProxyEngine
 import com.example.vpn.tun.DnsManager
+import com.example.vpn.tun.TunnelSocketBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -29,15 +36,28 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.nio.charset.StandardCharsets
+import java.util.concurrent.TimeUnit
+import javax.net.SocketFactory
 import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
+import kotlin.math.abs
 
 data class InstalledAppInfo(
     val packageName: String,
@@ -75,6 +95,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isMeasuringLatency = MutableStateFlow(false)
     val isMeasuringLatency: StateFlow<Boolean> = _isMeasuringLatency.asStateFlow()
+
+    private val _isRefreshingExitIp = MutableStateFlow(false)
+    val isRefreshingExitIp: StateFlow<Boolean> = _isRefreshingExitIp.asStateFlow()
+
+    private val _speedTestState = MutableStateFlow(SpeedTestState())
+    val speedTestState: StateFlow<SpeedTestState> = _speedTestState.asStateFlow()
+
+    private val _stabilityState = MutableStateFlow(LatencyStabilityState())
+    val stabilityState: StateFlow<LatencyStabilityState> = _stabilityState.asStateFlow()
+
+    private val _portScannerState = MutableStateFlow(PortScannerState())
+    val portScannerState: StateFlow<PortScannerState> = _portScannerState.asStateFlow()
+
+    private val _dnsLeakReport = MutableStateFlow(DnsLeakReport())
+    val dnsLeakReport: StateFlow<DnsLeakReport> = _dnsLeakReport.asStateFlow()
 
     private val _userMessage = MutableStateFlow<String?>(null)
     val userMessage: StateFlow<String?> = _userMessage.asStateFlow()
@@ -224,6 +259,445 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         hostKeyStore.clearAll()
         refreshKnownHosts()
         _userMessage.value = "Claves de host SSH eliminadas."
+    }
+
+    fun refreshExitIp() {
+        if (_isRefreshingExitIp.value) return
+        val engine = connectionManager.activeEngine
+        val currentState = connectionState.value as? ConnectionState.Connected
+        if (engine == null || currentState == null) {
+            _userMessage.value = "Conecta el túnel primero para consultar tu IP de salida."
+            return
+        }
+        viewModelScope.launch {
+            _isRefreshingExitIp.value = true
+            try {
+                val t0 = System.currentTimeMillis()
+                val exitInfo = withContext(Dispatchers.IO) {
+                    diagnosticsDnsManager.fetchExitIpInfoThroughTunnel(engine)
+                }
+                val measuredLatency = if (exitInfo != null) {
+                    (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                } else {
+                    currentState.latencyMs
+                }
+                val latest = connectionState.value
+                if (latest is ConnectionState.Connected && latest.profileId == currentState.profileId && exitInfo != null) {
+                    connectionManager.setState(
+                        latest.copy(
+                            exitIp = exitInfo.ip,
+                            exitCountry = exitInfo.country,
+                            exitCountryCode = exitInfo.countryCode,
+                            exitCity = exitInfo.city,
+                            latencyMs = measuredLatency
+                        )
+                    )
+                    _userMessage.value = "IP de salida actualizada: ${exitInfo.ip}"
+                } else if (exitInfo == null) {
+                    _userMessage.value = "No se pudo consultar la IP de salida en este momento."
+                }
+            } finally {
+                _isRefreshingExitIp.value = false
+            }
+        }
+    }
+
+    fun runSpeedAndBurstTest() {
+        if (_speedTestState.value.isRunning) return
+        viewModelScope.launch {
+            val activeEngine = connectionManager.activeEngine
+            val isConnected = connectionState.value is ConnectionState.Connected && activeEngine != null
+            _speedTestState.value = SpeedTestState(
+                isRunning = true,
+                phaseLabel = if (isConnected) "Midiendo descarga vía túnel..." else "Midiendo descarga directa...",
+                usedTunnel = isConnected
+            )
+
+            withContext(Dispatchers.IO) {
+                var bridge: TunnelSocketBridge? = null
+                try {
+                    val client = if (isConnected && activeEngine != null) {
+                        val b = TunnelSocketBridge(activeEngine)
+                        bridge = b
+                        OkHttpClient.Builder()
+                            .socketFactory(b.createSocketFactory())
+                            .protocols(listOf(Protocol.HTTP_1_1))
+                            .connectTimeout(6_000L, TimeUnit.MILLISECONDS)
+                            .readTimeout(9_000L, TimeUnit.MILLISECONDS)
+                            .writeTimeout(9_000L, TimeUnit.MILLISECONDS)
+                            .build()
+                    } else {
+                        OkHttpClient.Builder()
+                            .protocols(listOf(Protocol.HTTP_1_1))
+                            .connectTimeout(6_000L, TimeUnit.MILLISECONDS)
+                            .readTimeout(9_000L, TimeUnit.MILLISECONDS)
+                            .writeTimeout(9_000L, TimeUnit.MILLISECONDS)
+                            .build()
+                    }
+
+                    val samples = mutableListOf<SpeedSample>()
+                    val startNs = System.nanoTime()
+                    var peakMbps = 0f
+                    var timeToPeakSec: Float? = null
+                    var totalDownloaded = 0L
+
+                    val dlUrls = listOf(
+                        "https://speed.cloudflare.com/__down?bytes=5000000",
+                        "http://speed.cloudflare.com/__down?bytes=5000000"
+                    )
+                    var downloadSucceeded = false
+                    for (url in dlUrls) {
+                        val ok = runCatching {
+                            val req = Request.Builder()
+                                .url(url)
+                                .header("User-Agent", "AIOTunnelVPN/2.0")
+                                .build()
+                            client.newCall(req).execute().use { resp ->
+                                if (!resp.isSuccessful) return@use false
+                                val stream = resp.body?.byteStream() ?: return@use false
+                                val buf = ByteArray(16_384)
+                                var windowBytes = 0L
+                                var windowStartNs = System.nanoTime()
+                                while (true) {
+                                    val nowNs = System.nanoTime()
+                                    val totalElapsedSec = (nowNs - startNs) / 1_000_000_000f
+                                    if (totalElapsedSec >= 7.0f) break
+                                    val n = stream.read(buf)
+                                    if (n == -1) break
+                                    if (n > 0) {
+                                        totalDownloaded += n
+                                        windowBytes += n
+                                        val dtWindow = (nowNs - windowStartNs) / 1_000_000_000f
+                                        if (dtWindow >= 0.40f) {
+                                            val instMbps = (windowBytes * 8f) / (dtWindow * 1_000_000f)
+                                            if (instMbps > peakMbps) {
+                                                peakMbps = instMbps
+                                                timeToPeakSec = totalElapsedSec
+                                            }
+                                            samples.add(SpeedSample(elapsedSec = totalElapsedSec, downloadMbps = instMbps))
+                                            _speedTestState.value = _speedTestState.value.copy(
+                                                downloadMbps = instMbps,
+                                                peakDownloadMbps = peakMbps,
+                                                timeToPeakSec = timeToPeakSec,
+                                                samples = samples.toList()
+                                            )
+                                            windowBytes = 0L
+                                            windowStartNs = nowNs
+                                        }
+                                    }
+                                }
+                                true
+                            }
+                        }.getOrDefault(false)
+                        if (ok && totalDownloaded > 0L) {
+                            downloadSucceeded = true
+                            break
+                        }
+                    }
+
+                    val totalDlSec = ((System.nanoTime() - startNs) / 1_000_000_000f).coerceAtLeast(0.1f)
+                    val avgDlMbps = if (downloadSucceeded) (totalDownloaded * 8f) / (totalDlSec * 1_000_000f) else null
+                    if (avgDlMbps != null && samples.isEmpty()) {
+                        samples.add(SpeedSample(totalDlSec, avgDlMbps))
+                        peakMbps = maxOf(peakMbps, avgDlMbps)
+                        timeToPeakSec = timeToPeakSec ?: totalDlSec
+                    }
+
+                    _speedTestState.value = _speedTestState.value.copy(
+                        phaseLabel = "Midiendo velocidad de subida...",
+                        downloadMbps = avgDlMbps,
+                        peakDownloadMbps = peakMbps.takeIf { it > 0f },
+                        timeToPeakSec = timeToPeakSec,
+                        samples = samples.toList()
+                    )
+
+                    // Upload phase (512 KB HTTP POST burst)
+                    val uploadPayload = ByteArray(512 * 1024)
+                    val ulStartNs = System.nanoTime()
+                    val uploadSucceeded = runCatching {
+                        val req = Request.Builder()
+                            .url("https://speed.cloudflare.com/__up")
+                            .post(uploadPayload.toRequestBody("application/octet-stream".toMediaType()))
+                            .build()
+                        client.newCall(req).execute().use { it.isSuccessful }
+                    }.getOrDefault(false)
+                    val ulElapsedSec = ((System.nanoTime() - ulStartNs) / 1_000_000_000f).coerceAtLeast(0.05f)
+                    val ulMbps = if (uploadSucceeded) (uploadPayload.size * 8f) / (ulElapsedSec * 1_000_000f) else null
+
+                    if (samples.isNotEmpty() && ulMbps != null) {
+                        val last = samples.last()
+                        samples[samples.lastIndex] = last.copy(uploadMbps = ulMbps)
+                    }
+
+                    _speedTestState.value = _speedTestState.value.copy(
+                        isRunning = false,
+                        phaseLabel = if (downloadSucceeded) "Test completado" else "Sin respuesta del servidor de prueba",
+                        downloadMbps = avgDlMbps,
+                        uploadMbps = ulMbps,
+                        peakDownloadMbps = peakMbps.takeIf { it > 0f },
+                        timeToPeakSec = timeToPeakSec,
+                        samples = samples.toList(),
+                        errorMessage = if (!downloadSucceeded) "No se pudo completar la transferencia de prueba." else null
+                    )
+                } catch (err: Throwable) {
+                    _speedTestState.value = _speedTestState.value.copy(
+                        isRunning = false,
+                        phaseLabel = "Error en test de velocidad",
+                        errorMessage = err.message ?: "Error de red"
+                    )
+                } finally {
+                    runCatching { bridge?.close() }
+                }
+            }
+        }
+    }
+
+    fun runStabilityAndJitterTest(activeProfile: TunnelProfile?) {
+        if (_stabilityState.value.isRunning) return
+        viewModelScope.launch {
+            val activeEngine = connectionManager.activeEngine
+            val isConnected = connectionState.value is ConnectionState.Connected && activeEngine != null
+            _stabilityState.value = LatencyStabilityState(
+                isRunning = true,
+                usedTunnel = isConnected
+            )
+
+            withContext(Dispatchers.IO) {
+                val results = mutableListOf<Long?>()
+                val totalPings = 20
+                for (i in 0 until totalPings) {
+                    val sampleMs: Long? = if (isConnected && activeEngine != null) {
+                        diagnosticsDnsManager.probeTunnelExitTtfb(activeEngine)?.ttfbMs
+                            ?: runCatching {
+                                val t0 = System.nanoTime()
+                                activeEngine.openTcpTunnel("1.1.1.1", 443).use { }
+                                ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
+                            }.getOrNull()
+                    } else {
+                        val host = activeProfile?.host?.takeIf { it.isNotBlank() } ?: "1.1.1.1"
+                        val port = activeProfile?.port?.takeIf { it in 1..65535 } ?: 443
+                        runCatching {
+                            val t0 = System.nanoTime()
+                            Socket().use { sock ->
+                                sock.tcpNoDelay = true
+                                sock.connect(InetSocketAddress(host, port), 2_500)
+                            }
+                            ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
+                        }.getOrNull()
+                    }
+                    results.add(sampleMs)
+
+                    val valid = results.filterNotNull()
+                    val minMs = valid.minOrNull()
+                    val maxMs = valid.maxOrNull()
+                    val avgMs = if (valid.isNotEmpty()) valid.sum() / valid.size else null
+                    val jitterMs = computeJitterMs(valid)
+                    val lossPct = ((results.count { it == null }.toFloat() / results.size.toFloat()) * 100f)
+
+                    _stabilityState.value = LatencyStabilityState(
+                        isRunning = i < totalPings - 1,
+                        pingSamplesMs = results.toList(),
+                        minMs = minMs,
+                        avgMs = avgMs,
+                        maxMs = maxMs,
+                        jitterMs = jitterMs,
+                        packetLossPercent = lossPct,
+                        qualityGrade = if (i == totalPings - 1) classifyQuality(avgMs, jitterMs, lossPct) else null,
+                        usedTunnel = isConnected
+                    )
+                }
+            }
+        }
+    }
+
+    fun runBugHostPortScan(rawHost: String) {
+        if (_portScannerState.value.isRunning) return
+        val targetHost = rawHost.trim().removePrefix("https://").removePrefix("http://").substringBefore("/").substringBefore(":")
+        if (targetHost.isBlank() || targetHost.any { it.isWhitespace() }) {
+            _portScannerState.value = PortScannerState(
+                isRunning = false,
+                targetHost = rawHost,
+                errorMessage = "Ingresa un dominio o IP válido para escanear."
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            _portScannerState.value = PortScannerState(
+                isRunning = true,
+                targetHost = targetHost
+            )
+            val ports = listOf(80, 443, 8080, 8443, 2052, 2082)
+            val results = withContext(Dispatchers.IO) {
+                ports.map { port ->
+                    async { probeSingleBugHostPort(targetHost, port) }
+                }.awaitAll().sortedBy { ports.indexOf(it.port) }
+            }
+            _portScannerState.value = PortScannerState(
+                isRunning = false,
+                targetHost = targetHost,
+                results = results
+            )
+        }
+    }
+
+    private fun probeSingleBugHostPort(host: String, port: Int): PortProbeEntry {
+        val isTlsPort = port == 443 || port == 8443
+        val t0 = System.nanoTime()
+        return runCatching {
+            Socket().use { rawSocket ->
+                rawSocket.tcpNoDelay = true
+                rawSocket.soTimeout = 2_500
+                rawSocket.connect(InetSocketAddress(host, port), 2_500)
+
+                val ioSocket: Socket = if (isTlsPort) {
+                    val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory)
+                        .createSocket(rawSocket, host, port, true) as SSLSocket
+                    runCatching {
+                        val params = ssl.sslParameters
+                        params.serverNames = listOf(SNIHostName(host))
+                        ssl.sslParameters = params
+                    }
+                    ssl.soTimeout = 2_500
+                    ssl.startHandshake()
+                    ssl
+                } else {
+                    rawSocket
+                }
+
+                val out = ioSocket.getOutputStream()
+                val req = "HEAD / HTTP/1.1\r\nHost: $host\r\nUser-Agent: AIOTunnelVPN/2.0\r\nConnection: close\r\n\r\n"
+                out.write(req.toByteArray(StandardCharsets.US_ASCII))
+                out.flush()
+
+                val reader = BufferedReader(InputStreamReader(ioSocket.getInputStream(), StandardCharsets.ISO_8859_1))
+                val statusLine = reader.readLine().orEmpty()
+                val code = statusLine.split(' ').getOrNull(1)?.toIntOrNull()
+                val dt = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L)
+                if (isTlsPort) runCatching { ioSocket.close() }
+
+                PortProbeEntry(
+                    port = port,
+                    isOpen = true,
+                    httpCode = code,
+                    tlsOk = if (isTlsPort) true else null,
+                    latencyMs = dt,
+                    note = statusLine.ifBlank { "Puerto TCP abierto" }
+                )
+            }
+        }.getOrElse { err ->
+            PortProbeEntry(
+                port = port,
+                isOpen = false,
+                tlsOk = if (isTlsPort) false else null,
+                note = err.message?.take(48) ?: "Cerrado / Timeout"
+            )
+        }
+    }
+
+    fun runDnsLeakAndIpAudit(activeProfile: TunnelProfile?) {
+        if (_dnsLeakReport.value.isRunning) return
+        viewModelScope.launch {
+            val activeEngine = connectionManager.activeEngine
+            val isConnected = connectionState.value is ConnectionState.Connected && activeEngine != null
+            val dnsConfig = connectionManager.activeDnsConfig
+                ?: DnsManager.resolveActiveDnsConfig(activeProfile, settings.value)
+
+            _dnsLeakReport.value = DnsLeakReport(
+                isRunning = true,
+                activeModeLabel = dnsConfig.dnsMode.name,
+                primaryResolver = dnsConfig.primaryDns,
+                secondaryResolver = dnsConfig.secondaryDns,
+                usedTunnel = isConnected
+            )
+
+            withContext(Dispatchers.IO) {
+                val query = diagnosticsDnsManager.buildSampleDnsQuery("cloudflare.com")
+                val (dohStatus, leakStatus, exitIpInfo) = if (isConnected && activeEngine != null) {
+                    val dohRes = diagnosticsDnsManager.resolveViaTunnelDohWithDetails(
+                        queryBytes = query,
+                        dnsConfig = dnsConfig,
+                        engine = activeEngine,
+                        bypassCache = true
+                    )
+                    val tcpRes = diagnosticsDnsManager.resolveViaTunnelTcpWithFallback(
+                        queryBytes = query,
+                        primaryDns = dnsConfig.primaryDns,
+                        secondaryDns = dnsConfig.secondaryDns,
+                        engine = activeEngine,
+                        bypassCache = true
+                    )
+                    val exitInfo = diagnosticsDnsManager.fetchExitIpInfoThroughTunnel(activeEngine)
+                    val dohText = if (dohRes.responseBytes != null) {
+                        "DoH activo (${dohRes.serverLabel})"
+                    } else {
+                        "DoH fallback -> ${tcpRes.serverLabel}"
+                    }
+                    val leakText = if (dohRes.responseBytes != null || tcpRes.responseBytes != null) {
+                        "Sin fugas: DNS resuelto dentro del túnel VPN"
+                    } else {
+                        "Advertencia: no hubo respuesta DNS dentro del túnel"
+                    }
+                    Triple(dohText, leakText, exitInfo)
+                } else {
+                    val directDoh = diagnosticsDnsManager.resolveViaDohDirect(query, dnsConfig.dohUrl)
+                    val directExit = fetchDirectExitIpInfo()
+                    val dohText = if (directDoh != null) {
+                        "DoH directo disponible (${dnsConfig.dohUrl})"
+                    } else {
+                        "DoH directo inaccesible sin túnel"
+                    }
+                    Triple(dohText, "Túnel desconectado (auditoría de red directa)", directExit)
+                }
+
+                _dnsLeakReport.value = DnsLeakReport(
+                    isRunning = false,
+                    activeModeLabel = when (dnsConfig.dnsMode) {
+                        com.example.domain.models.DnsMode.DNS_OVER_HTTPS -> "DNS-over-HTTPS (RFC 8484)"
+                        com.example.domain.models.DnsMode.PLAIN_DNS -> "DNS-over-TCP en túnel"
+                        com.example.domain.models.DnsMode.SYSTEM_DEFAULT -> "Interceptación TUN activa"
+                    },
+                    primaryResolver = dnsConfig.primaryDns,
+                    secondaryResolver = dnsConfig.secondaryDns,
+                    dohStatus = dohStatus,
+                    leakStatus = leakStatus,
+                    exitIpInfo = exitIpInfo,
+                    usedTunnel = isConnected
+                )
+            }
+        }
+    }
+
+    private fun fetchDirectExitIpInfo(): DnsManager.ExitIpInfo? = runCatching {
+        val client = OkHttpClient.Builder()
+            .connectTimeout(4_000L, TimeUnit.MILLISECONDS)
+            .readTimeout(4_000L, TimeUnit.MILLISECONDS)
+            .build()
+        val req = Request.Builder()
+            .url("http://ip-api.com/json/?fields=status,country,countryCode,city,isp,as,query")
+            .header("Accept", "application/json")
+            .build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return@use null
+            val body = resp.body?.string() ?: return@use null
+            DnsManager.parseIpApiJson(body)
+        }
+    }.getOrNull()
+
+    private fun computeJitterMs(samples: List<Long>): Long? {
+        if (samples.size < 2) return if (samples.size == 1) 0L else null
+        var sumDiff = 0L
+        for (i in 1 until samples.size) {
+            sumDiff += abs(samples[i] - samples[i - 1])
+        }
+        return sumDiff / (samples.size - 1)
+    }
+
+    private fun classifyQuality(avgMs: Long?, jitterMs: Long?, lossPct: Float): String = when {
+        avgMs == null || lossPct > 15f -> "Inestable"
+        lossPct == 0f && avgMs < 130L && (jitterMs ?: 0L) < 35L -> "Excelente"
+        lossPct <= 10f && avgMs < 260L -> "Estable"
+        else -> "Inestable"
     }
 
     fun measureAllServersLatency(autoSelectFastest: Boolean = false) {
@@ -419,7 +893,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             updateDiagnosticItem(dohResult)
 
-            // 3. Server Endpoint / Tunnel Flow probe (real TTFB via HEAD / 204 without cold setup + body download)
+            // 3. Server Endpoint / Tunnel Flow probe
             val serverResult = withContext(Dispatchers.IO) {
                 if (activeProfile == null) {
                     DiagnosticCheckResult(

@@ -8,7 +8,11 @@ import com.example.engines.adapter.TunnelEngine
 import com.example.engines.adapter.TunnelStream
 import com.example.engines.adapter.UdpRelaySession
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
@@ -85,8 +89,16 @@ class DnsManager(
         @Volatile var lastAccessedOrder: Long
     )
 
+    private data class CacheLookupResult(
+        val cacheKey: String,
+        val bytes: ByteArray,
+        val isStale: Boolean
+    )
+
     private val dnsCache = ConcurrentHashMap<String, CachedDnsEntry>()
+    private val refreshingKeys = ConcurrentHashMap.newKeySet<String>()
     private val cacheAccessSeq = AtomicLong(0L)
+    private val swrScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val bridgeLock = Any()
 
     @Volatile
@@ -232,6 +244,8 @@ class DnsManager(
     }
 
     override fun close() {
+        swrScope.cancel()
+        refreshingKeys.clear()
         synchronized(bridgeLock) {
             closeTunnelClientsLocked()
         }
@@ -258,42 +272,22 @@ class DnsManager(
 
         val cacheScopeKey = "${dnsConfig.dnsMode.name}:${dnsConfig.primaryDns}:${dnsConfig.dohUrl}"
         if (!bypassCache) {
-            lookupCachedResponse(queryBytes, cacheScopeKey)?.let { return@withContext it }
+            lookupCachedResponseWithStale(queryBytes, cacheScopeKey)?.let { hit ->
+                if (hit.isStale) {
+                    scheduleBackgroundCacheRefresh(
+                        cacheKey = hit.cacheKey,
+                        cacheScopeKey = cacheScopeKey,
+                        queryBytes = queryBytes.copyOf(),
+                        dnsConfig = dnsConfig,
+                        engine = engine,
+                        udpRelay = udpRelay
+                    )
+                }
+                return@withContext hit.bytes
+            }
         }
 
-        val resolved = when (dnsConfig.dnsMode) {
-            DnsMode.DNS_OVER_HTTPS -> {
-                resolveViaTunnelDohWithDetails(queryBytes, dnsConfig, engine, bypassCache = true).responseBytes
-                    ?: resolveViaTunnelTcpWithFallback(
-                        queryBytes = queryBytes,
-                        primaryDns = dnsConfig.primaryDns,
-                        secondaryDns = dnsConfig.secondaryDns,
-                        engine = engine,
-                        bypassCache = true
-                    ).responseBytes
-                    ?: resolveViaUdpgwWithFallback(queryBytes, dnsConfig, udpRelay)
-            }
-            DnsMode.PLAIN_DNS -> {
-                resolveViaTunnelTcpWithFallback(
-                    queryBytes = queryBytes,
-                    primaryDns = dnsConfig.primaryDns,
-                    secondaryDns = dnsConfig.secondaryDns,
-                    engine = engine,
-                    bypassCache = true
-                ).responseBytes
-                    ?: resolveViaUdpgwWithFallback(queryBytes, dnsConfig, udpRelay)
-            }
-            DnsMode.SYSTEM_DEFAULT -> {
-                resolveViaUdpgwWithFallback(queryBytes, dnsConfig, udpRelay)
-                    ?: resolveViaTunnelTcpWithFallback(
-                        queryBytes = queryBytes,
-                        primaryDns = dnsConfig.primaryDns,
-                        secondaryDns = dnsConfig.secondaryDns,
-                        engine = engine,
-                        bypassCache = true
-                    ).responseBytes
-            }
-        }
+        val resolved = queryUpstreamByMode(queryBytes, dnsConfig, engine, udpRelay)
 
         if (resolved != null && !bypassCache) {
             storeCachedResponse(queryBytes, resolved, cacheScopeKey)
@@ -301,11 +295,89 @@ class DnsManager(
         resolved
     }
 
-    private fun lookupCachedResponse(queryBytes: ByteArray, cacheScopeKey: String): ByteArray? {
+    private suspend fun queryUpstreamByMode(
+        queryBytes: ByteArray,
+        dnsConfig: ResolvedDnsConfig,
+        engine: TunnelEngine,
+        udpRelay: UdpRelaySession?
+    ): ByteArray? = when (dnsConfig.dnsMode) {
+        DnsMode.DNS_OVER_HTTPS -> {
+            resolveViaTunnelDohWithDetails(queryBytes, dnsConfig, engine, bypassCache = true).responseBytes
+                ?: resolveViaTunnelTcpWithFallback(
+                    queryBytes = queryBytes,
+                    primaryDns = dnsConfig.primaryDns,
+                    secondaryDns = dnsConfig.secondaryDns,
+                    engine = engine,
+                    bypassCache = true
+                ).responseBytes
+                ?: resolveViaUdpgwWithFallback(queryBytes, dnsConfig, udpRelay)
+        }
+        DnsMode.PLAIN_DNS -> {
+            resolveViaTunnelTcpWithFallback(
+                queryBytes = queryBytes,
+                primaryDns = dnsConfig.primaryDns,
+                secondaryDns = dnsConfig.secondaryDns,
+                engine = engine,
+                bypassCache = true
+            ).responseBytes
+                ?: resolveViaUdpgwWithFallback(queryBytes, dnsConfig, udpRelay)
+        }
+        DnsMode.SYSTEM_DEFAULT -> {
+            resolveViaUdpgwWithFallback(queryBytes, dnsConfig, udpRelay)
+                ?: resolveViaTunnelTcpWithFallback(
+                    queryBytes = queryBytes,
+                    primaryDns = dnsConfig.primaryDns,
+                    secondaryDns = dnsConfig.secondaryDns,
+                    engine = engine,
+                    bypassCache = true
+                ).responseBytes
+        }
+    }
+
+    private fun scheduleBackgroundCacheRefresh(
+        cacheKey: String,
+        cacheScopeKey: String,
+        queryBytes: ByteArray,
+        dnsConfig: ResolvedDnsConfig,
+        engine: TunnelEngine,
+        udpRelay: UdpRelaySession?
+    ) {
+        if (!refreshingKeys.add(cacheKey)) return
+        swrScope.launch {
+            try {
+                val refreshed = queryUpstreamByMode(queryBytes, dnsConfig, engine, udpRelay)
+                if (refreshed != null) {
+                    storeCachedResponse(queryBytes, refreshed, cacheScopeKey)
+                }
+            } catch (_: Throwable) {
+            } finally {
+                refreshingKeys.remove(cacheKey)
+            }
+        }
+    }
+
+    internal fun seedCacheEntryForTesting(
+        queryBytes: ByteArray,
+        responseBytes: ByteArray,
+        scopeKey: String,
+        expiresAtMs: Long
+    ) {
+        val qKey = buildDnsCacheKey(queryBytes, scopeKey) ?: return
+        dnsCache[qKey] = CachedDnsEntry(
+            responseBytes = responseBytes.copyOf(),
+            expiresAtMs = expiresAtMs,
+            lastAccessedOrder = cacheAccessSeq.incrementAndGet()
+        )
+    }
+
+    private fun lookupCachedResponseWithStale(
+        queryBytes: ByteArray,
+        cacheScopeKey: String
+    ): CacheLookupResult? {
         val qKey = buildDnsCacheKey(queryBytes, cacheScopeKey) ?: return null
         val entry = dnsCache[qKey] ?: return null
         val now = System.currentTimeMillis()
-        if (now >= entry.expiresAtMs) {
+        if (now >= entry.expiresAtMs + STALE_GRACE_MS) {
             dnsCache.remove(qKey, entry)
             return null
         }
@@ -315,8 +387,15 @@ class DnsManager(
             copy[0] = queryBytes[0]
             copy[1] = queryBytes[1]
         }
-        return copy
+        return CacheLookupResult(
+            cacheKey = qKey,
+            bytes = copy,
+            isStale = now >= entry.expiresAtMs
+        )
     }
+
+    private fun lookupCachedResponse(queryBytes: ByteArray, cacheScopeKey: String): ByteArray? =
+        lookupCachedResponseWithStale(queryBytes, cacheScopeKey)?.bytes
 
     private fun storeCachedResponse(queryBytes: ByteArray, responseBytes: ByteArray, cacheScopeKey: String) {
         if (responseBytes.size < 12) return
@@ -339,7 +418,7 @@ class DnsManager(
     }
 
     private fun evictCacheEntries(nowMs: Long) {
-        dnsCache.entries.removeIf { it.value.expiresAtMs <= nowMs }
+        dnsCache.entries.removeIf { it.value.expiresAtMs + STALE_GRACE_MS <= nowMs }
         while (dnsCache.size >= MAX_DNS_CACHE_ENTRIES) {
             val lruKey = dnsCache.entries.minByOrNull { it.value.lastAccessedOrder }?.key ?: break
             dnsCache.remove(lruKey)
@@ -855,11 +934,13 @@ class DnsManager(
         val ip: String,
         val country: String? = null,
         val countryCode: String? = null,
-        val city: String? = null
+        val city: String? = null,
+        val isp: String? = null,
+        val asn: String? = null
     )
 
     /**
-     * Queries public exit IP + country/city through the active TunnelEngine.
+     * Queries public exit IP + country/city/ISP/ASN through the active TunnelEngine.
      * Uses pooled HTTP client over [TunnelSocketBridge] or fallback direct TCP stream.
      */
     suspend fun fetchExitIpInfoThroughTunnel(engine: TunnelEngine): ExitIpInfo? = withContext(Dispatchers.IO) {
@@ -868,7 +949,7 @@ class DnsManager(
         val fromIpApi = runCatching {
             withTimeoutOrNull(4_500L) {
                 val req = Request.Builder()
-                    .url("http://ip-api.com/json/?fields=status,country,countryCode,city,query")
+                    .url("http://ip-api.com/json/?fields=status,country,countryCode,city,isp,as,query")
                     .header("Accept", "application/json")
                     .header("User-Agent", "AIOTunnelVPN/1.0")
                     .build()
@@ -885,7 +966,7 @@ class DnsManager(
         val fromDirectIpApi = runCatching {
             withTimeoutOrNull(4_000L) {
                 engine.openTcpTunnel("ip-api.com", 80).use { stream ->
-                    val req = "GET /json/?fields=status,country,countryCode,city,query HTTP/1.1\r\n" +
+                    val req = "GET /json/?fields=status,country,countryCode,city,isp,as,query HTTP/1.1\r\n" +
                         "Host: ip-api.com\r\n" +
                         "Accept: application/json\r\n" +
                         "Connection: close\r\n" +
@@ -1053,6 +1134,7 @@ class DnsManager(
         const val DNS_QUERY_TIMEOUT_MS = 2_500L
         const val MIN_CACHE_TTL_SECONDS = 60L
         const val MAX_CACHE_TTL_SECONDS = 3_600L
+        const val STALE_GRACE_MS = 86_400_000L // 24 hours stale-while-revalidate grace window
         const val MAX_DNS_CACHE_ENTRIES = 512
         const val DEFAULT_PRIMARY_DNS = "1.1.1.1"
         const val DEFAULT_SECONDARY_DNS = "1.0.0.1"
@@ -1151,7 +1233,16 @@ class DnsManager(
             val country: String = "",
             val countryCode: String = "",
             val city: String = "",
+            val isp: String = "",
+            @kotlinx.serialization.SerialName("as")
+            val asn: String = "",
             val query: String = ""
+        )
+
+        @Serializable
+        private data class IpWhoConnection(
+            val asn: Long? = null,
+            val isp: String = ""
         )
 
         @Serializable
@@ -1160,7 +1251,8 @@ class DnsManager(
             val ip: String = "",
             val country: String = "",
             val country_code: String = "",
-            val city: String = ""
+            val city: String = "",
+            val connection: IpWhoConnection? = null
         )
 
         private val jsonParser = Json { ignoreUnknownKeys = true }
@@ -1182,7 +1274,9 @@ class DnsManager(
                 ip = ip,
                 country = obj.country.trim().ifBlank { null },
                 countryCode = obj.countryCode.trim().ifBlank { null },
-                city = obj.city.trim().ifBlank { null }
+                city = obj.city.trim().ifBlank { null },
+                isp = obj.isp.trim().ifBlank { null },
+                asn = obj.asn.trim().ifBlank { null }
             )
         }.getOrNull()
 
@@ -1195,7 +1289,9 @@ class DnsManager(
                 ip = ip,
                 country = obj.country.trim().ifBlank { null },
                 countryCode = obj.country_code.trim().ifBlank { null },
-                city = obj.city.trim().ifBlank { null }
+                city = obj.city.trim().ifBlank { null },
+                isp = obj.connection?.isp?.trim()?.ifBlank { null },
+                asn = obj.connection?.asn?.let { "AS$it" }
             )
         }.getOrNull()
 

@@ -55,9 +55,10 @@ import com.example.domain.models.TunnelProfile
 import com.example.presentation.components.GlassCard
 import com.example.presentation.components.LatencyPill
 import com.example.presentation.components.ProtocolBadge
-import com.example.ui.theme.GruvboxGreen
-import com.example.ui.theme.GruvboxOrange
-import com.example.ui.theme.GruvboxYellow
+import com.example.ui.theme.SpaceAmber
+import com.example.ui.theme.SpaceEmerald
+import com.example.ui.theme.SpaceGlassSurface
+import com.example.ui.theme.SpaceViolet
 
 private enum class ServerFilter(val label: String) {
     ALL("Todos"),
@@ -163,7 +164,7 @@ fun ServersScreen(
                 Button(
                     onClick = onAutoSelectFastest,
                     enabled = !isMeasuringLatency && profiles.isNotEmpty(),
-                    colors = ButtonDefaults.buttonColors(containerColor = GruvboxOrange),
+                    colors = ButtonDefaults.buttonColors(containerColor = SpaceViolet),
                     modifier = Modifier
                         .weight(1f)
                         .testTag("servers_auto_select_button")
@@ -200,7 +201,7 @@ fun ServersScreen(
                         Spacer(Modifier.height(12.dp))
                         Button(
                             onClick = onAddProfile,
-                            colors = ButtonDefaults.buttonColors(containerColor = GruvboxOrange)
+                            colors = ButtonDefaults.buttonColors(containerColor = SpaceViolet)
                         ) {
                             Icon(Icons.Default.Add, contentDescription = null)
                             Spacer(Modifier.width(6.dp))
@@ -235,14 +236,14 @@ private fun ServerItemCard(
     onSelect: () -> Unit,
     onToggleFavorite: () -> Unit
 ) {
-    val borderColor = if (isSelected) GruvboxGreen else MaterialTheme.colorScheme.outlineVariant
+    val borderColor = if (isSelected) SpaceEmerald else MaterialTheme.colorScheme.outline
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onSelect)
             .testTag("server_card_${profile.id}"),
-        shape = RoundedCornerShape(16.dp),
-        color = if (isSelected) GruvboxGreen.copy(alpha = 0.08f) else MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(20.dp),
+        color = if (isSelected) SpaceEmerald.copy(alpha = 0.11f) else SpaceGlassSurface,
         border = BorderStroke(if (isSelected) 1.5.dp else 1.dp, borderColor)
     ) {
         Row(
@@ -272,7 +273,7 @@ private fun ServerItemCard(
                         Icon(
                             imageVector = Icons.Default.CheckCircle,
                             contentDescription = "Servidor activo",
-                            tint = GruvboxGreen,
+                            tint = SpaceEmerald,
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -301,7 +302,7 @@ private fun ServerItemCard(
                 Icon(
                     imageVector = if (profile.isFavorite) Icons.Filled.Star else Icons.Outlined.StarBorder,
                     contentDescription = if (profile.isFavorite) "Quitar de favoritos" else "Marcar como favorito",
-                    tint = if (profile.isFavorite) GruvboxYellow else MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = if (profile.isFavorite) SpaceAmber else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }

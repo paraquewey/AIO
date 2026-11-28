@@ -7,11 +7,14 @@ import android.content.Intent
 import android.net.Uri
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -28,17 +32,23 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -63,16 +73,20 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.R
 import com.example.core.network.LocalNetworkHelper
+import com.example.data.preferences.SettingsDataStore
 import com.example.domain.models.AppLanguage
 import com.example.domain.models.AppSettings
 import com.example.domain.models.DnsMode
+import com.example.domain.models.NetworkPreset
 import com.example.presentation.components.GlassCard
-import com.example.ui.theme.GruvboxAqua
-import com.example.ui.theme.GruvboxGreen
-import com.example.ui.theme.GruvboxOrange
-import com.example.ui.theme.GruvboxRed
-import com.example.ui.theme.GruvboxYellow
+import com.example.ui.theme.SpaceAmber
+import com.example.ui.theme.SpaceCoral
+import com.example.ui.theme.SpaceCyan
+import com.example.ui.theme.SpaceEmerald
+import com.example.ui.theme.SpaceViolet
+import kotlin.math.roundToInt
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
@@ -105,6 +119,7 @@ fun SettingsScreen(
 
     var localInterfaceIps by remember { mutableStateOf(LocalNetworkHelper.getActiveInterfaceAddresses()) }
     var isIgnoringBatteryOpt by remember { mutableStateOf(checkIgnoringBatteryOptimizations(context)) }
+    var advancedExpanded by remember { mutableStateOf(false) }
 
     DisposableEffect(lifecycleOwner, context) {
         val observer = LifecycleEventObserver { _, event ->
@@ -133,7 +148,7 @@ fun SettingsScreen(
 
             // 1. Connection & Resilience (Auto-reconnect + Timeout)
             GlassCard {
-                Text("Conexión y resiliencia", style = MaterialTheme.typography.titleMedium, color = GruvboxOrange)
+                Text("Conexión y resiliencia", style = MaterialTheme.typography.titleMedium, color = SpaceViolet)
                 Spacer(Modifier.height(6.dp))
 
                 SettingSwitchRow(
@@ -174,7 +189,7 @@ fun SettingsScreen(
                         Text(
                             text = timeoutError
                                 ?: "Por defecto: 10 s · Aplicado a socket.connect y soTimeout (${settings.connectionTimeoutSeconds} s)",
-                            color = if (timeoutError != null) GruvboxRed else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (timeoutError != null) SpaceCoral else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     },
                     isError = timeoutError != null,
@@ -197,7 +212,7 @@ fun SettingsScreen(
                     subtitle = "Excluye 10.x, 172.16-31.x, 192.168.x y 100.64.0.0/10 del túnel VPN",
                     checked = settings.bypassLan,
                     testTag = "settings_bypass_lan_switch"
-                ) { v -> onUpdateSettings { it.copy(bypassLan = v) } }
+                ) { v -> onUpdateSettings { it.copy(bypassLan = v, networkPreset = NetworkPreset.CUSTOM) } }
 
                 SettingSwitchRow(
                     title = "Habilitar enrutamiento IPv6",
@@ -209,9 +224,9 @@ fun SettingsScreen(
             // 2. Wi-Fi / Hotspot Proxy Sharing (0.0.0.0:<port>)
             GlassCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.WifiTethering, contentDescription = null, tint = GruvboxAqua)
+                    Icon(Icons.Default.WifiTethering, contentDescription = null, tint = SpaceCyan)
                     Spacer(Modifier.width(8.dp))
-                    Text("Compartir VPN (Wi-Fi / Hotspot)", style = MaterialTheme.typography.titleMedium, color = GruvboxAqua)
+                    Text("Compartir VPN (Wi-Fi / Hotspot)", style = MaterialTheme.typography.titleMedium, color = SpaceCyan)
                 }
                 Spacer(Modifier.height(6.dp))
                 SettingSwitchRow(
@@ -249,7 +264,7 @@ fun SettingsScreen(
                         Text(
                             text = proxyPortError
                                 ?: "Por defecto: 8080 · Al cambiar se reinicia el proxy en el nuevo puerto",
-                            color = if (proxyPortError != null) GruvboxRed else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (proxyPortError != null) SpaceCoral else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     },
                     isError = proxyPortError != null,
@@ -272,7 +287,7 @@ fun SettingsScreen(
                     settings.wifiProxyShareEnabled -> "Activado · Se iniciará al conectar el túnel VPN"
                     else -> "Inactivo · Activa el interruptor para compartir"
                 }
-                val proxyStatusColor = if (wifiProxyActivePort != null) GruvboxGreen else MaterialTheme.colorScheme.onSurfaceVariant
+                val proxyStatusColor = if (wifiProxyActivePort != null) SpaceEmerald else MaterialTheme.colorScheme.onSurfaceVariant
 
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -329,7 +344,7 @@ fun SettingsScreen(
                                     Icon(
                                         imageVector = Icons.Default.ContentCopy,
                                         contentDescription = "Copiar IP y puerto proxy",
-                                        tint = GruvboxAqua
+                                        tint = SpaceCyan
                                     )
                                 }
                             }
@@ -363,13 +378,13 @@ fun SettingsScreen(
                                             copyToClipboard(context, "Proxy ${iface.categoryLabel}", fullAddr)
                                             onShowMessage("Copiado: $fullAddr")
                                         },
-                                        modifier = Modifier.size(28.dp)
+                                        modifier = Modifier.size(32.dp)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.ContentCopy,
                                             contentDescription = "Copiar $fullAddr",
-                                            tint = GruvboxAqua,
-                                            modifier = Modifier.size(15.dp)
+                                            tint = SpaceCyan,
+                                            modifier = Modifier.size(16.dp)
                                         )
                                     }
                                 }
@@ -400,7 +415,7 @@ fun SettingsScreen(
                         Icon(
                             imageVector = Icons.Default.BatteryChargingFull,
                             contentDescription = null,
-                            tint = if (isIgnoringBatteryOpt) GruvboxGreen else GruvboxOrange
+                            tint = if (isIgnoringBatteryOpt) SpaceEmerald else SpaceAmber
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
@@ -410,10 +425,10 @@ fun SettingsScreen(
                     }
                     Surface(
                         shape = RoundedCornerShape(50),
-                        color = (if (isIgnoringBatteryOpt) GruvboxGreen else GruvboxOrange).copy(alpha = 0.16f),
+                        color = (if (isIgnoringBatteryOpt) SpaceEmerald else SpaceAmber).copy(alpha = 0.16f),
                         border = BorderStroke(
                             1.dp,
-                            (if (isIgnoringBatteryOpt) GruvboxGreen else GruvboxOrange).copy(alpha = 0.6f)
+                            (if (isIgnoringBatteryOpt) SpaceEmerald else SpaceAmber).copy(alpha = 0.6f)
                         )
                     ) {
                         Text(
@@ -423,7 +438,7 @@ fun SettingsScreen(
                                 "Activa (Puede detenerse)"
                             },
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                            color = if (isIgnoringBatteryOpt) GruvboxGreen else GruvboxOrange,
+                            color = if (isIgnoringBatteryOpt) SpaceEmerald else SpaceAmber,
                             modifier = Modifier
                                 .padding(horizontal = 10.dp, vertical = 4.dp)
                                 .testTag("settings_battery_badge")
@@ -450,7 +465,7 @@ fun SettingsScreen(
                         isIgnoringBatteryOpt = checkIgnoringBatteryOptimizations(context)
                     },
                     colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = if (isIgnoringBatteryOpt) GruvboxGreen else GruvboxOrange
+                        contentColor = if (isIgnoringBatteryOpt) SpaceEmerald else SpaceAmber
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -468,13 +483,13 @@ fun SettingsScreen(
 
             // Default DNS
             GlassCard {
-                Text("DNS predeterminado", style = MaterialTheme.typography.titleMedium, color = GruvboxAqua)
+                Text("DNS predeterminado", style = MaterialTheme.typography.titleMedium, color = SpaceCyan)
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     DnsMode.entries.forEach { mode ->
                         FilterChip(
                             selected = settings.defaultDnsMode == mode,
-                            onClick = { onUpdateSettings { it.copy(defaultDnsMode = mode) } },
+                            onClick = { onUpdateSettings { it.copy(defaultDnsMode = mode, networkPreset = NetworkPreset.CUSTOM) } },
                             label = {
                                 Text(
                                     when (mode) {
@@ -519,10 +534,10 @@ fun SettingsScreen(
 
             // Appearance & Language
             GlassCard {
-                Text("Apariencia e idioma", style = MaterialTheme.typography.titleMedium, color = GruvboxYellow)
+                Text("Apariencia e idioma", style = MaterialTheme.typography.titleMedium, color = SpaceViolet)
                 Spacer(Modifier.height(6.dp))
                 SettingSwitchRow(
-                    title = "Tema claro cálido Gruvbox (desactivado = AMOLED puro)",
+                    title = "Tema claro espacial (desactivado = Space Glass oscuro)",
                     checked = settings.useLightTheme,
                     testTag = "settings_theme_switch"
                 ) { v -> onUpdateSettings { it.copy(useLightTheme = v) } }
@@ -542,7 +557,7 @@ fun SettingsScreen(
             // Security & Logs
             GlassCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Security, contentDescription = null, tint = GruvboxGreen)
+                    Icon(Icons.Default.Security, contentDescription = null, tint = SpaceEmerald)
                     Spacer(Modifier.padding(start = 8.dp))
                     Text("Seguridad criptográfica", style = MaterialTheme.typography.titleMedium)
                 }
@@ -551,7 +566,7 @@ fun SettingsScreen(
                     title = "Exigir verificación TLS estricta",
                     checked = settings.strictTlsVerification,
                     testTag = "settings_strict_tls_switch"
-                ) { v -> onUpdateSettings { it.copy(strictTlsVerification = v) } }
+                ) { v -> onUpdateSettings { it.copy(strictTlsVerification = v, networkPreset = NetworkPreset.CUSTOM) } }
 
                 SettingSwitchRow(
                     title = "Registros detallados de depuración (sin secretos)",
@@ -564,14 +579,14 @@ fun SettingsScreen(
                     onClick = onClearKnownHosts,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Restablecer claves de host SSH confiables", color = GruvboxRed)
+                    Text("Restablecer claves de host SSH confiables", color = SpaceCoral)
                 }
             }
 
             // Mandatory Privacy Transparency Section
             GlassCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.PrivacyTip, contentDescription = null, tint = GruvboxYellow)
+                    Icon(Icons.Default.PrivacyTip, contentDescription = null, tint = SpaceAmber)
                     Spacer(Modifier.padding(start = 8.dp))
                     Text("Privacidad y transparencia", style = MaterialTheme.typography.titleMedium)
                 }
@@ -587,6 +602,272 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface
                 )
+            }
+
+            // Expandable Advanced Network & Engine Tuning Drawer (Bottom of Settings)
+            GlassCard(borderColor = SpaceViolet.copy(alpha = 0.45f)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .sizeIn(minHeight = 48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { advancedExpanded = !advancedExpanded }
+                        .testTag("settings_advanced_drawer_header"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Tune, contentDescription = null, tint = SpaceViolet)
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Ajustes Avanzados del Motor y Rendimiento",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Text(
+                                text = "Perfil actual: ${settings.networkPreset.label}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = SpaceEmerald
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = if (advancedExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (advancedExpanded) "Contraer ajustes avanzados" else "Expandir ajustes avanzados",
+                        tint = SpaceViolet
+                    )
+                }
+
+                AnimatedVisibility(visible = advancedExpanded) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+
+                        Text(
+                            text = "Presets de red (1 toque)",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = SpaceCyan
+                        )
+
+                        val presetItems = listOf(
+                            NetworkPreset.BALANCED to "preset_balanced",
+                            NetworkPreset.MAX_STABILITY to "preset_stability",
+                            NetworkPreset.MAX_SPEED to "preset_speed",
+                            NetworkPreset.MAX_SECURITY_PRIVACY to "preset_security"
+                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            presetItems.forEach { (preset, tag) ->
+                                val selected = settings.networkPreset == preset
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = if (selected) {
+                                        SpaceViolet.copy(alpha = 0.16f)
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.45f)
+                                    },
+                                    border = BorderStroke(
+                                        width = if (selected) 1.5.dp else 1.dp,
+                                        color = if (selected) SpaceViolet else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .clickable {
+                                            onUpdateSettings { it.applyNetworkPreset(preset) }
+                                        }
+                                        .testTag(tag)
+                                ) {
+                                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                                        Text(
+                                            text = preset.label,
+                                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                            color = if (selected) SpaceEmerald else MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = preset.subtitle,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+
+                        Text(
+                            text = "Tamaño de buffer de transferencia (${settings.transferBufferKb} KB)",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            SettingsDataStore.ALLOWED_BUFFER_KB.forEach { kb ->
+                                FilterChip(
+                                    selected = settings.transferBufferKb == kb,
+                                    onClick = {
+                                        onUpdateSettings {
+                                            it.copy(
+                                                transferBufferKb = kb,
+                                                networkPreset = NetworkPreset.CUSTOM
+                                            )
+                                        }
+                                    },
+                                    label = { Text("$kb KB") },
+                                    modifier = Modifier.testTag("chip_buffer_$kb")
+                                )
+                            }
+                        }
+
+                        SettingSwitchRow(
+                            title = "Flush inmediato en túnel y proxy",
+                            subtitle = "Reduce tirones de carga web enviando cada bloque sin espera adicional",
+                            checked = settings.immediateFlush,
+                            testTag = "settings_immediate_flush_switch"
+                        ) { v ->
+                            onUpdateSettings {
+                                it.copy(immediateFlush = v, networkPreset = NetworkPreset.CUSTOM)
+                            }
+                        }
+
+                        Text(
+                            text = "Ventana de canal SSH (${settings.sshWindowKb} KB)",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            SettingsDataStore.ALLOWED_SSH_WINDOW_KB.forEach { kb ->
+                                FilterChip(
+                                    selected = settings.sshWindowKb == kb,
+                                    onClick = {
+                                        onUpdateSettings {
+                                            it.copy(
+                                                sshWindowKb = kb,
+                                                networkPreset = NetworkPreset.CUSTOM
+                                            )
+                                        }
+                                    },
+                                    label = { Text("$kb KB") },
+                                    modifier = Modifier.testTag("chip_ssh_window_$kb")
+                                )
+                            }
+                        }
+
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Keep-Alive SSH", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    text = "${settings.sshKeepAliveSeconds} s",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = SpaceCyan
+                                )
+                            }
+                            Slider(
+                                value = settings.sshKeepAliveSeconds.toFloat(),
+                                onValueChange = { raw ->
+                                    val sec = raw.roundToInt().coerceIn(5, 60)
+                                    onUpdateSettings {
+                                        it.copy(
+                                            sshKeepAliveSeconds = sec,
+                                            networkPreset = NetworkPreset.CUSTOM
+                                        )
+                                    }
+                                },
+                                valueRange = 5f..60f,
+                                modifier = Modifier.testTag("settings_keepalive_slider")
+                            )
+                        }
+
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Concurrencia máxima de canales SSH", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    text = "${settings.maxConcurrentSshChannels} canales",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = SpaceEmerald
+                                )
+                            }
+                            Slider(
+                                value = settings.maxConcurrentSshChannels.toFloat(),
+                                onValueChange = { raw ->
+                                    val channels = raw.roundToInt().coerceIn(8, 64)
+                                    onUpdateSettings {
+                                        it.copy(
+                                            maxConcurrentSshChannels = channels,
+                                            networkPreset = NetworkPreset.CUSTOM
+                                        )
+                                    }
+                                },
+                                valueRange = 8f..64f,
+                                modifier = Modifier.testTag("settings_concurrency_slider")
+                            )
+                        }
+
+                        SettingSwitchRow(
+                            title = "TCP_NODELAY (Desactivar algoritmo Nagle)",
+                            subtitle = "Acelera handshakes HTTP/TLS y navegación rápida",
+                            checked = settings.tcpNoDelay,
+                            testTag = "settings_tcp_nodelay_switch"
+                        ) { v ->
+                            onUpdateSettings {
+                                it.copy(tcpNoDelay = v, networkPreset = NetworkPreset.CUSTOM)
+                            }
+                        }
+
+                        SettingSwitchRow(
+                            title = "Compresión SSH (zlib)",
+                            subtitle = "Reduce ancho de banda en texto; desactivar en conexiones muy rápidas",
+                            checked = settings.sshCompression,
+                            testTag = "settings_ssh_compression_switch"
+                        ) { v ->
+                            onUpdateSettings {
+                                it.copy(sshCompression = v, networkPreset = NetworkPreset.CUSTOM)
+                            }
+                        }
+
+                        SettingSwitchRow(
+                            title = "Kill-Switch estricto",
+                            subtitle = "Bloquea fugas hacia LAN local y refuerza aislamiento cuando la VPN está activa",
+                            checked = settings.strictKillSwitch,
+                            testTag = "settings_kill_switch"
+                        ) { v ->
+                            onUpdateSettings {
+                                it.copy(strictKillSwitch = v, networkPreset = NetworkPreset.CUSTOM)
+                            }
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                onUpdateSettings { it.restoreOptimalEngineDefaults() }
+                                onShowMessage("Valores óptimos restaurados.")
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = SpaceEmerald),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("settings_restore_optimal_button")
+                        ) {
+                            Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Restaurar valores óptimos")
+                        }
+                    }
+                }
             }
         }
     }

@@ -292,6 +292,30 @@ class DiagnosticsAndLowLatencyTest {
         assertEquals(16_384, TunPacketRouter.COPY_BUFFER_BYTES)
         assertEquals(64, TunPacketRouter.TUN_WRITE_QUEUE_CAPACITY)
         assertEquals(16_384, WifiShareProxyServer.COPY_BUFFER_BYTES)
+
+        val channelCtor = com.jcraft.jsch.ChannelDirectTCPIP::class.java.getDeclaredConstructor()
+        channelCtor.isAccessible = true
+        val channel = channelCtor.newInstance()
+        val setLwSize = com.jcraft.jsch.Channel::class.java.getDeclaredMethod("setLocalWindowSize", Int::class.javaPrimitiveType)
+        setLwSize.isAccessible = true
+        setLwSize.invoke(channel, SshTunnelEngine.SSH_LOCAL_WINDOW_BYTES)
+
+        val lwMaxField = com.jcraft.jsch.Channel::class.java.getDeclaredField("lwsize_max")
+        lwMaxField.isAccessible = true
+        lwMaxField.setInt(channel, SshTunnelEngine.SSH_LOCAL_WINDOW_BYTES)
+
+        val setPktSize = com.jcraft.jsch.Channel::class.java.getDeclaredMethod("setLocalPacketSize", Int::class.javaPrimitiveType)
+        setPktSize.isAccessible = true
+        setPktSize.invoke(channel, SshTunnelEngine.SSH_LOCAL_PACKET_BYTES)
+
+        val lwSizeField = com.jcraft.jsch.Channel::class.java.getDeclaredField("lwsize")
+        lwSizeField.isAccessible = true
+        val lmpSizeField = com.jcraft.jsch.Channel::class.java.getDeclaredField("lmpsize")
+        lmpSizeField.isAccessible = true
+
+        assertEquals(262_144, lwSizeField.getInt(channel))
+        assertEquals(262_144, lwMaxField.getInt(channel))
+        assertEquals(32_768, lmpSizeField.getInt(channel))
     }
 
     @Test

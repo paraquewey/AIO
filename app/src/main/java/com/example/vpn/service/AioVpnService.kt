@@ -126,6 +126,7 @@ class AioVpnService : VpnService() {
         )
         val dnsConfig = DnsManager.resolveActiveDnsConfig(profile, appSettings)
 
+        val tuningConfig = appSettings.toEngineTuningConfig()
         val engineContext = EngineContext(
             protectSocket = { sock -> protect(sock) },
             protectDatagramSocket = { ds -> protect(ds) },
@@ -133,7 +134,8 @@ class AioVpnService : VpnService() {
             onSshHostKeyChallenge = { challenge ->
                 connMgr.requestSshHostKeyConfirmation(challenge)
             },
-            connectionTimeoutMs = timeoutMs
+            connectionTimeoutMs = timeoutMs,
+            tuningConfig = tuningConfig
         )
         engine.initialize(engineContext)
 
@@ -152,7 +154,7 @@ class AioVpnService : VpnService() {
         }
 
         // Establish Android TUN interface AFTER engine authentication succeeds
-        val effectiveBypassLan = appSettings.bypassLan && profile.bypassLan
+        val effectiveBypassLan = !appSettings.strictKillSwitch && appSettings.bypassLan && profile.bypassLan
         val tunFd = establishTunInterface(profile, dnsConfig, effectiveBypassLan)
         if (tunFd == null) {
             engine.stop()
@@ -175,7 +177,8 @@ class AioVpnService : VpnService() {
             dnsConfig = dnsConfig,
             engine = engine,
             dnsManager = dnsManager,
-            statisticsManager = statsMgr
+            statisticsManager = statsMgr,
+            initialTuning = tuningConfig
         )
         packetRouter = router
         router.start()
@@ -246,18 +249,23 @@ class AioVpnService : VpnService() {
         wifiShareObserverJob?.cancel()
         val app = application as AioTunnelApplication
         val bypassFlag = AtomicBoolean(profileBypassLan)
+        val currentTuningRef = java.util.concurrent.atomic.AtomicReference(com.example.domain.models.EngineTuningConfig())
         wifiShareObserverJob = serviceScope.launch(Dispatchers.IO) {
             var currentPort: Int? = null
             app.settingsRepository.settings.collect { settings ->
+                val tuning = settings.toEngineTuningConfig()
+                currentTuningRef.set(tuning)
                 if (!disconnectingFlag && activeEngine === engine) {
+                    engine.updateTuning(tuning)
+                    packetRouter?.updateTuning(tuning)
                     if (settings.wakeLockEnabled) {
                         acquireVpnWakeLock()
                     } else {
                         releaseVpnWakeLock()
                     }
                 }
-                bypassFlag.set(settings.bypassLan && profileBypassLan)
-                val desiredPort = if (settings.wifiProxyShareEnabled) {
+                bypassFlag.set(!settings.strictKillSwitch && settings.bypassLan && profileBypassLan)
+                val desiredPort = if (settings.wifiProxyShareEnabled && !settings.strictKillSwitch) {
                     settings.wifiProxySharePort.coerceIn(1024, 65535)
                 } else null
 
@@ -277,7 +285,8 @@ class AioVpnService : VpnService() {
                         context = applicationContext,
                         protectSocket = { sock -> protect(sock) },
                         isBypassLanEnabled = { bypassFlag.get() },
-                        connectTimeoutMs = timeoutMs
+                        connectTimeoutMs = timeoutMs,
+                        getTuningConfig = { currentTuningRef.get() }
                     )
                     runCatching {
                         val bound = server.start()

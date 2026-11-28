@@ -3,6 +3,7 @@ package com.example.vpn.tun
 import android.os.ParcelFileDescriptor
 import com.example.core.logger.AppLogger
 import com.example.core.stats.StatisticsManager
+import com.example.domain.models.EngineTuningConfig
 import com.example.domain.models.TunnelProfile
 import com.example.engines.adapter.TunnelEngine
 import com.example.engines.adapter.TunnelStream
@@ -37,8 +38,15 @@ class TunPacketRouter(
     private val dnsConfig: DnsManager.ResolvedDnsConfig,
     private val engine: TunnelEngine,
     private val dnsManager: DnsManager,
-    private val statisticsManager: StatisticsManager
+    private val statisticsManager: StatisticsManager,
+    initialTuning: EngineTuningConfig = EngineTuningConfig()
 ) {
+    @Volatile
+    private var tuningConfig: EngineTuningConfig = initialTuning
+
+    fun updateTuning(config: EngineTuningConfig) {
+        tuningConfig = config
+    }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val dnsSemaphore = Semaphore(24)
     private val running = AtomicBoolean(false)
@@ -165,7 +173,7 @@ class TunPacketRouter(
         }
         AppLogger.info(
             TAG,
-            "Router TUN FIFO activo (buf=${COPY_BUFFER_BYTES / 1024} KB, cola TUN=$TUN_WRITE_QUEUE_CAPACITY, DNS Fast-Lane UDP/53, DNS1=${dnsConfig.primaryDns}, DNS2=${dnsConfig.secondaryDns}, modo=${dnsConfig.dnsMode.name})"
+            "Router TUN FIFO activo (buf=${tuningConfig.transferBufferKb} KB, flush=${if (tuningConfig.immediateFlush) "inmediato" else "agrupado"}, cola TUN=$TUN_WRITE_QUEUE_CAPACITY, DNS Fast-Lane UDP/53, DNS1=${dnsConfig.primaryDns}, DNS2=${dnsConfig.secondaryDns}, modo=${dnsConfig.dnsMode.name})"
         )
 
         startTunWriterLoop()
@@ -370,13 +378,22 @@ class TunPacketRouter(
             session.streamWriteMutex.withLock {
                 while (!session.closed && running.get()) {
                     session.flushQueued.set(false)
+                    val immediate = tuningConfig.immediateFlush
+                    var wroteAny = false
                     while (!session.closed && running.get()) {
                         val chunk = synchronized(session.stateLock) {
                             session.pendingOutbound.pollFirst()
                         } ?: break
                         stream.outputStream.write(chunk)
-                        stream.outputStream.flush()
+                        if (immediate) {
+                            stream.outputStream.flush()
+                        } else {
+                            wroteAny = true
+                        }
                         statisticsManager.recordBytesSent(chunk.size.toLong())
+                    }
+                    if (!immediate && wroteAny && !session.closed && running.get()) {
+                        stream.outputStream.flush()
                     }
                     if (session.clientFinReceived && !session.halfClosedSent && !session.closed) {
                         val stillEmpty = synchronized(session.stateLock) { session.pendingOutbound.isEmpty() }
@@ -627,9 +644,13 @@ class TunPacketRouter(
     private fun startTunnelReader(session: TcpSession, stream: TunnelStream) {
         val mss = calculateTunMss()
         session.readerJob = scope.launch {
-            val readBuf = ByteArray(COPY_BUFFER_BYTES)
+            var readBuf = ByteArray(tuningConfig.transferBufferBytes)
             try {
                 while (isActive && running.get() && !session.closed) {
+                    val targetSize = tuningConfig.transferBufferBytes
+                    if (readBuf.size != targetSize) {
+                        readBuf = ByteArray(targetSize)
+                    }
                     val n = runInterruptible(Dispatchers.IO) {
                         stream.inputStream.read(readBuf)
                     }

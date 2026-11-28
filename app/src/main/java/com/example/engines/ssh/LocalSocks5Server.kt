@@ -1,6 +1,7 @@
 package com.example.engines.ssh
 
 import com.example.core.logger.AppLogger
+import com.example.domain.models.EngineTuningConfig
 import com.example.engines.adapter.TunnelStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -13,12 +14,14 @@ import java.io.Closeable
 import java.io.DataInputStream
 import java.io.IOException
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicBoolean
 
 class LocalSocks5Server(
+    initialTuning: EngineTuningConfig = EngineTuningConfig(),
     private val openTunnel: suspend (targetHost: String, targetPort: Int) -> TunnelStream
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -26,12 +29,21 @@ class LocalSocks5Server(
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
 
+    @Volatile
+    private var tuningConfig: EngineTuningConfig = initialTuning
+
+    fun updateTuning(config: EngineTuningConfig) {
+        tuningConfig = config
+    }
+
     val localPort: Int
         get() = serverSocket?.localPort ?: -1
 
     fun start(): Int {
         if (running.get() && localPort > 0) return localPort
-        val ss = ServerSocket(0, 64, InetAddress.getByName("127.0.0.1"))
+        val ss = ServerSocket()
+        ss.reuseAddress = true
+        ss.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 64)
         serverSocket = ss
         running.set(true)
         acceptJob = scope.launch {
@@ -52,7 +64,8 @@ class LocalSocks5Server(
     private suspend fun handleClient(client: Socket) {
         var tunnel: TunnelStream? = null
         try {
-            client.tcpNoDelay = true
+            runCatching { client.reuseAddress = true }
+            client.tcpNoDelay = tuningConfig.tcpNoDelay
             client.keepAlive = true
             runCatching { client.receiveBufferSize = 256 * 1024 }
             runCatching { client.sendBufferSize = 256 * 1024 }
@@ -126,13 +139,19 @@ class LocalSocks5Server(
 
             val activeTunnel = tunnel
             val upstreamJob = scope.launch {
-                val buf = ByteArray(COPY_BUFFER_BYTES)
+                var buf = ByteArray(tuningConfig.transferBufferBytes)
                 try {
                     while (isActive && running.get()) {
+                        val tuning = tuningConfig
+                        if (buf.size != tuning.transferBufferBytes) {
+                            buf = ByteArray(tuning.transferBufferBytes)
+                        }
                         val n = input.read(buf)
                         if (n <= 0) break
                         activeTunnel.outputStream.write(buf, 0, n)
-                        activeTunnel.outputStream.flush()
+                        if (tuning.immediateFlush) {
+                            activeTunnel.outputStream.flush()
+                        }
                     }
                 } catch (_: Throwable) {
                 } finally {
@@ -141,13 +160,19 @@ class LocalSocks5Server(
             }
 
             val downstreamJob = scope.launch {
-                val buf = ByteArray(COPY_BUFFER_BYTES)
+                var buf = ByteArray(tuningConfig.transferBufferBytes)
                 try {
                     while (isActive && running.get()) {
+                        val tuning = tuningConfig
+                        if (buf.size != tuning.transferBufferBytes) {
+                            buf = ByteArray(tuning.transferBufferBytes)
+                        }
                         val n = activeTunnel.inputStream.read(buf)
                         if (n <= 0) break
                         output.write(buf, 0, n)
-                        output.flush()
+                        if (tuning.immediateFlush) {
+                            output.flush()
+                        }
                     }
                 } catch (_: Throwable) {
                 } finally {
@@ -160,6 +185,7 @@ class LocalSocks5Server(
         } catch (_: Throwable) {
         } finally {
             runCatching { tunnel?.close() }
+            runCatching { client.setSoLinger(true, 0) }
             runCatching { client.close() }
         }
     }

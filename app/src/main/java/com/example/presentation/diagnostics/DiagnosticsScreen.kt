@@ -24,7 +24,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
@@ -82,11 +84,9 @@ import com.example.domain.models.LogLevel
 import com.example.domain.models.ServerMessageMode
 import com.example.presentation.components.ServerMessageWebView
 import com.example.presentation.components.formatServerBannerAsHtml
-import com.example.ui.theme.GruvboxAqua
-import com.example.ui.theme.GruvboxGreen
-import com.example.ui.theme.GruvboxOrange
-import com.example.ui.theme.GruvboxRed
-import com.example.ui.theme.GruvboxYellow
+import com.example.ui.theme.SpaceAmber
+import com.example.ui.theme.SpaceCyan
+import com.example.ui.theme.SpaceViolet
 import com.example.ui.theme.TerminalBg
 import com.example.ui.theme.TerminalDivider
 import com.example.ui.theme.TerminalError
@@ -112,8 +112,12 @@ fun DiagnosticsScreen(
     onClearLogs: () -> Unit,
     onRemoveKnownHost: (String, Int) -> Unit,
     onNotify: (String) -> Unit,
+    onBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    if (onBack != null) {
+        BackHandler(onBack = onBack)
+    }
     val clipboard = LocalClipboardManager.current
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
     val listState = rememberLazyListState()
@@ -203,6 +207,18 @@ fun DiagnosticsScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        if (onBack != null) {
+                            IconButton(
+                                onClick = onBack,
+                                modifier = Modifier.testTag("console_back_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Volver",
+                                    tint = TerminalTextInfo
+                                )
+                            }
+                        }
                         Text(
                             text = "Consola",
                             style = MaterialTheme.typography.titleMedium.copy(
@@ -277,7 +293,7 @@ fun DiagnosticsScreen(
                             Icon(
                                 imageVector = Icons.Default.Menu,
                                 contentDescription = "Menú de pruebas, claves SSH y auto-scroll",
-                                tint = GruvboxOrange
+                                tint = SpaceViolet
                             )
                         }
                     }
@@ -562,18 +578,18 @@ private fun ConsoleToolsBottomSheetContent(
                         Icon(
                             imageVector = Icons.Default.NetworkCheck,
                             contentDescription = null,
-                            tint = GruvboxYellow,
+                            tint = SpaceAmber,
                             modifier = Modifier.size(20.dp)
                         )
                         Text(
                             text = "Pruebas de red y seguridad",
                             style = MaterialTheme.typography.titleSmall,
-                            color = GruvboxYellow
+                            color = SpaceAmber
                         )
                     }
                     Button(
                         onClick = onRunDiagnostics,
-                        colors = ButtonDefaults.buttonColors(containerColor = GruvboxOrange),
+                        colors = ButtonDefaults.buttonColors(containerColor = SpaceViolet),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                         modifier = Modifier.testTag("diagnostics_run_button")
                     ) {
@@ -615,7 +631,7 @@ private fun ConsoleToolsBottomSheetContent(
                             DiagnosticStatus.RUNNING -> CircularProgressIndicator(
                                 modifier = Modifier.size(18.dp),
                                 strokeWidth = 2.dp,
-                                color = GruvboxOrange
+                                color = SpaceViolet
                             )
                             DiagnosticStatus.PASSED -> Icon(
                                 Icons.Default.CheckCircle,
@@ -650,7 +666,7 @@ private fun ConsoleToolsBottomSheetContent(
                                     fontFamily = FontFamily.Monospace,
                                     fontWeight = FontWeight.SemiBold
                                 ),
-                                color = GruvboxAqua
+                                color = SpaceCyan
                             )
                         }
                     }

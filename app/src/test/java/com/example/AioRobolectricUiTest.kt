@@ -24,6 +24,7 @@ import com.example.domain.models.TunnelProfile
 import com.example.domain.models.TunnelProtocol
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -38,9 +39,21 @@ class AioRobolectricUiTest {
     val composeRule = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun `bottom navigation switches across all five core sections`() {
+    fun `bottom navigation switches across all five Space Glass sections and console`() {
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("dashboard_status_label").assertIsDisplayed()
+        composeRule.onNodeWithTag("dashboard_timer").assertIsDisplayed()
+        composeRule.onNodeWithTag("dashboard_exit_ip_card").performScrollTo().assertIsDisplayed()
+        assertTrue(composeRule.onAllNodesWithTag("dashboard_download_tile").fetchSemanticsNodes().isEmpty())
+
+        composeRule.onNodeWithTag("home_console_button").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("console_title").assertIsDisplayed()
+        composeRule.onNodeWithTag("console_copy_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("console_clear_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("console_menu_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("console_back_button").performClick()
+        composeRule.waitForIdle()
 
         composeRule.onNodeWithTag("nav_servers").performClick()
         composeRule.waitForIdle()
@@ -50,12 +63,12 @@ class AioRobolectricUiTest {
         composeRule.waitForIdle()
         composeRule.onNodeWithText("Gestor de perfiles").assertIsDisplayed()
 
-        composeRule.onNodeWithTag("nav_diagnostics").performClick()
+        composeRule.onNodeWithTag("nav_analysis").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("console_title").assertIsDisplayed()
-        composeRule.onNodeWithTag("console_copy_button").assertIsDisplayed()
-        composeRule.onNodeWithTag("console_clear_button").assertIsDisplayed()
-        composeRule.onNodeWithTag("console_menu_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("analysis_speed_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("analysis_stability_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("analysis_port_scan_button").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("analysis_dns_audit_button").performScrollTo().assertIsDisplayed()
 
         composeRule.onNodeWithTag("nav_settings").performClick()
         composeRule.waitForIdle()
@@ -72,7 +85,7 @@ class AioRobolectricUiTest {
     @Test
     fun `console sandwich menu opens bottom sheet with diagnostics, ssh keys and autoscroll`() {
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("nav_diagnostics").performClick()
+        composeRule.onNodeWithTag("home_console_button").performClick()
         composeRule.waitForIdle()
 
         composeRule.onNodeWithTag("console_menu_button").performClick()
@@ -81,7 +94,36 @@ class AioRobolectricUiTest {
         composeRule.onNodeWithTag("console_autoscroll_switch").assertIsDisplayed().assertIsOn()
         composeRule.onNodeWithTag("diagnostics_run_button").assertIsDisplayed()
         composeRule.onAllNodesWithText("Claves SSH confiables", substring = true).fetchSemanticsNodes()
-            .let { org.junit.Assert.assertTrue(it.isNotEmpty()) }
+            .let { assertTrue(it.isNotEmpty()) }
+    }
+
+    @Test
+    fun `settings expands advanced engine drawer and applies presets`() {
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("nav_settings").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("settings_advanced_drawer_header").performScrollTo().performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("preset_speed").performScrollTo().performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithText("Perfil actual: Máxima Velocidad", substring = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        composeRule.onNodeWithTag("preset_security").performScrollTo().performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithText("Perfil actual: Máxima Seguridad y Privacidad", substring = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("settings_kill_switch").performScrollTo().assertIsOn()
+
+        composeRule.onNodeWithTag("settings_restore_optimal_button").performScrollTo().performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            composeRule.onAllNodesWithText("Perfil actual: Equilibrado (Recomendado)", substring = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
     }
 
     @Test
@@ -94,7 +136,7 @@ class AioRobolectricUiTest {
         composeRule.onNodeWithTag("settings_timeout_input").performTextInput("1500")
         composeRule.waitForIdle()
         composeRule.onAllNodesWithText("Rango permitido: mínimo 1 s y máximo 999 s.").fetchSemanticsNodes()
-            .let { org.junit.Assert.assertTrue(it.isNotEmpty()) }
+            .let { assertTrue(it.isNotEmpty()) }
 
         composeRule.onNodeWithTag("settings_bypass_lan_switch").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("settings_wifi_proxy_switch").performScrollTo().performClick()

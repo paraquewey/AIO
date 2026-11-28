@@ -63,9 +63,10 @@ import androidx.compose.ui.unit.dp
 import com.example.domain.models.TunnelProfile
 import com.example.presentation.components.GlassCard
 import com.example.presentation.components.ProtocolBadge
-import com.example.ui.theme.GruvboxOrange
-import com.example.ui.theme.GruvboxRed
-import com.example.ui.theme.GruvboxYellow
+import com.example.ui.theme.SpaceAmber
+import com.example.ui.theme.SpaceCoral
+import com.example.ui.theme.SpaceGlassSurface
+import com.example.ui.theme.SpaceViolet
 import kotlinx.coroutines.launch
 import java.nio.charset.StandardCharsets
 
@@ -165,7 +166,7 @@ fun ConfigsScreen(
                 )
                 Button(
                     onClick = onCreateNew,
-                    colors = ButtonDefaults.buttonColors(containerColor = GruvboxOrange),
+                    colors = ButtonDefaults.buttonColors(containerColor = SpaceViolet),
                     modifier = Modifier.testTag("configs_create_button")
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -336,7 +337,7 @@ fun ConfigsScreen(
                         Text(
                             text = "Incluir contraseñas y claves en claro (solo respaldo privado)",
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (includeSecretsOnExport) GruvboxYellow else MaterialTheme.colorScheme.onSurface
+                            color = if (includeSecretsOnExport) SpaceAmber else MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -370,7 +371,7 @@ fun ConfigsScreen(
                         onDeleteProfile(target.id)
                         pendingDeleteProfile = null
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = GruvboxRed)
+                    colors = ButtonDefaults.buttonColors(containerColor = SpaceCoral)
                 ) {
                     Text("Eliminar")
                 }
@@ -393,9 +394,9 @@ private fun ConfigItemCard(
     onDelete: () -> Unit
 ) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        shape = RoundedCornerShape(20.dp),
+        color = SpaceGlassSurface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -456,7 +457,7 @@ private fun ConfigItemCard(
                     Icon(
                         Icons.Default.DeleteOutline,
                         contentDescription = "Eliminar perfil",
-                        tint = GruvboxRed
+                        tint = SpaceCoral
                     )
                 }
             }

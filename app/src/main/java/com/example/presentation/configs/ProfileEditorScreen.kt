@@ -72,12 +72,11 @@ import com.example.domain.models.TunnelProtocol
 import com.example.presentation.components.GlassCard
 import com.example.presentation.state.InstalledAppInfo
 import com.example.vpn.tun.DnsManager
-import com.example.ui.theme.GruvboxAqua
-import com.example.ui.theme.GruvboxGreen
-import com.example.ui.theme.GruvboxOrange
-import com.example.ui.theme.GruvboxPurple
-import com.example.ui.theme.GruvboxRed
-import com.example.ui.theme.GruvboxYellow
+import com.example.ui.theme.SpaceAmber
+import com.example.ui.theme.SpaceCoral
+import com.example.ui.theme.SpaceCyan
+import com.example.ui.theme.SpaceEmerald
+import com.example.ui.theme.SpaceViolet
 import java.util.UUID
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -94,12 +93,12 @@ fun ProfileEditorScreen(
 ) {
     LaunchedEffect(Unit) { onLoadInstalledApps() }
 
-    val colorChoices = listOf(0xFFFE8019L, 0xFFFABD2FL, 0xFFB8BB26L, 0xFF8EC07CL, 0xFF83A598L, 0xFFD3869BL)
+    val colorChoices = listOf(0xFF7B61FFL, 0xFF00E5A8L, 0xFF38BDF8L, 0xFFFFB800L, 0xFFFF4D6DL, 0xFFA78BFAL)
 
     var name by remember { mutableStateOf(existingProfile?.name ?: "") }
     var category by remember { mutableStateOf(existingProfile?.category ?: "General") }
     var tagsRaw by remember { mutableStateOf(existingProfile?.tags?.joinToString(", ") ?: "") }
-    var colorTagHex by remember { mutableLongStateOf(existingProfile?.colorTagHex ?: 0xFFFE8019L) }
+    var colorTagHex by remember { mutableLongStateOf(existingProfile?.colorTagHex ?: 0xFF7B61FFL) }
     var protocol by remember { mutableStateOf(existingProfile?.protocol ?: TunnelProtocol.HTTPS_PROXY) }
     var host by remember { mutableStateOf(existingProfile?.host ?: "") }
     var portStr by remember { mutableStateOf((existingProfile?.port ?: TunnelProtocol.HTTPS_PROXY.defaultPort).toString()) }
@@ -270,7 +269,7 @@ fun ProfileEditorScreen(
                             )
                             onSave(profile, secrets)
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = GruvboxGreen),
+                        colors = ButtonDefaults.buttonColors(containerColor = SpaceEmerald),
                         modifier = Modifier
                             .padding(end = 8.dp)
                             .testTag("editor_save_button")
@@ -313,7 +312,7 @@ fun ProfileEditorScreen(
 
                 // Identity & Category
                 GlassCard {
-                    Text("Identificación", style = MaterialTheme.typography.titleMedium, color = GruvboxYellow)
+                    Text("Identificación", style = MaterialTheme.typography.titleMedium, color = SpaceAmber)
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = name,
@@ -372,7 +371,7 @@ fun ProfileEditorScreen(
 
                 // Protocol Selection (Phase A built-in vs Phase C adapter)
                 GlassCard {
-                    Text("Protocolo de túnel", style = MaterialTheme.typography.titleMedium, color = GruvboxOrange)
+                    Text("Protocolo de túnel", style = MaterialTheme.typography.titleMedium, color = SpaceViolet)
                     Spacer(Modifier.height(6.dp))
                     Text(
                         text = "Motores integrados listos: HTTP, HTTPS, SOCKS5, SSH y SSH Jump Host.",
@@ -404,16 +403,16 @@ fun ProfileEditorScreen(
                         Spacer(Modifier.height(8.dp))
                         Surface(
                             shape = RoundedCornerShape(10.dp),
-                            color = GruvboxYellow.copy(alpha = 0.14f),
-                            border = BorderStroke(1.dp, GruvboxYellow.copy(alpha = 0.5f))
+                            color = SpaceAmber.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, SpaceAmber.copy(alpha = 0.5f))
                         ) {
                             Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Warning, contentDescription = null, tint = GruvboxYellow, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Warning, contentDescription = null, tint = SpaceAmber, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
                                 Text(
                                     text = protocol.requirementNote!!,
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = GruvboxYellow
+                                    color = SpaceAmber
                                 )
                             }
                         }
@@ -422,7 +421,7 @@ fun ProfileEditorScreen(
 
                 // Endpoint & Auth
                 GlassCard {
-                    Text("Servidor y credenciales", style = MaterialTheme.typography.titleMedium, color = GruvboxGreen)
+                    Text("Servidor y credenciales", style = MaterialTheme.typography.titleMedium, color = SpaceEmerald)
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
@@ -570,7 +569,7 @@ fun ProfileEditorScreen(
 
                 // TLS, Transport & Raw HTTP / WebSocket Payload
                 GlassCard {
-                    Text("TLS, transporte y Payload", style = MaterialTheme.typography.titleMedium, color = GruvboxAqua)
+                    Text("TLS, transporte y Payload", style = MaterialTheme.typography.titleMedium, color = SpaceCyan)
                     Spacer(Modifier.height(8.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -593,7 +592,7 @@ fun ProfileEditorScreen(
                             Text(
                                 text = "Verificar certificado, dominio y vigencia TLS (recomendado)",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (verifyTls) MaterialTheme.colorScheme.onSurface else GruvboxRed
+                                color = if (verifyTls) MaterialTheme.colorScheme.onSurface else SpaceCoral
                             )
                         }
                     }
@@ -725,7 +724,7 @@ fun ProfileEditorScreen(
 
                 // Custom Server Message (HTML / CSS / JS)
                 GlassCard {
-                    Text("Mensaje del Servidor (Server Message)", style = MaterialTheme.typography.titleMedium, color = GruvboxPurple)
+                    Text("Mensaje del Servidor (Server Message)", style = MaterialTheme.typography.titleMedium, color = SpaceViolet)
                     Spacer(Modifier.height(6.dp))
                     Text(
                         text = "Controla cómo se muestra el banner al conectarse en la consola de registros.",
